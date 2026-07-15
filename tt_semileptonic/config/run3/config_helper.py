@@ -10,6 +10,8 @@ from scinum import Number
 from columnflow.config_util import (
     get_root_processes_from_campaign, add_shift_aliases, add_category, verify_config_processes,
 )
+from columnflow.util import DotDict
+
 import tt_semileptonic.config.datasets_helper as datasets_helper
 import tt_semileptonic.config.defaults_and_groups_helper as defaults_and_groups_helper
 import tt_semileptonic.config.categories_helper as categories_helper

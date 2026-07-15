@@ -40,9 +40,8 @@ def add_data_datasets(
     elif config.campaign.x.run == 3:
         config.x.data_streams = [
             "mu",
-            # TODO: Figure out why we don't have egamma and we have e instead
-            "egamma",
-            # "e",
+            # "egamma",
+            "e", # 'egamma' was deprecated in facour of 'e'
         ]
     else:
         raise ValueError(f"Unsupported run number: {config.campaign.x.run}")
@@ -136,9 +135,19 @@ def add_dy_datasets(
                 # no HT-binned samples available yet, but in production chain -> to be checked!
                 # https://cms-pdmv-prod.web.cern.ch/grasp/samples?campaign=RunIII2024Summer24*GS&dataset=DYto2*-4J # noqa
                 # using LO samples binned in lepton flavor
-                "dy_4j_mumu_m50toinf_madgraph",
-                "dy_4j_ee_m50toinf_madgraph",
+                # "dy_4j_mumu_m50toinf_madgraph",
+                # "dy_4j_ee_m50toinf_madgraph",
                 # "dy_4j_tautau_m50toinf_madgraph",
+
+                "dy_ee_m50toinf_amcatnlo",
+                # "dy_ee_m50toinf_0j_amcatnlo",
+                # "dy_ee_m50toinf_1j_amcatnlo",
+                # "dy_ee_m50toinf_2j_amcatnlo",
+
+                "dy_mumu_m50toinf_amcatnlo",
+                # "dy_mumu_m50toinf_0j_amcatnlo",
+                # "dy_mumu_m50toinf_1j_amcatnlo",
+                # "dy_mumu_m50toinf_2j_amcatnlo",
             ],
         },
     }
@@ -149,7 +158,7 @@ def add_dy_datasets(
         raise ValueError(f"DY - Unsupported run/tag combination: run={run}, tag={tag}")
 
     for dataset in datasets_list:
-        ds = config.add_dataset(config.campaign.get_dataset(dataset))
+        ds = _config_add_dataset(config, dataset)
         ds.add_tag({"is_dy", "is_v_jets", "is_z_jets"})
 
         if limit_dataset_files:
@@ -322,7 +331,7 @@ def add_tt_sl_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} ttbar datasets.")
+        logger.info(f"Added {len(dataset_list)} ttbar-semileptonic datasets.")
 
 def add_tt_dl_datasets(
         config: od.Config,
@@ -365,7 +374,7 @@ def add_tt_dl_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} ttbar datasets.")
+        logger.info(f"Added {len(dataset_list)} ttbar-dileptonic datasets.")
 
 def add_tt_fh_datasets(
         config: od.Config,
@@ -408,7 +417,7 @@ def add_tt_fh_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} ttbar datasets.")
+        logger.info(f"Added {len(dataset_list)} ttbar-fully hadronic datasets.")
 
 def add_st_datasets(
         config: od.Config,
