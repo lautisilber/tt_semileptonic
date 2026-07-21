@@ -8,8 +8,9 @@ import os
 import yaml
 from scinum import Number
 from columnflow.config_util import (
-    get_root_processes_from_campaign, add_shift_aliases, add_category, verify_config_processes,
+    get_root_processes_from_campaign, add_shift_aliases, get_shifts_from_sources, verify_config_processes,
 )
+from columnflow.cms_util import CATInfo, CATSnapshot
 from columnflow.util import DotDict
 
 import tt_semileptonic.config.datasets_helper as datasets_helper
@@ -17,6 +18,7 @@ import tt_semileptonic.config.defaults_and_groups_helper as defaults_and_groups_
 import tt_semileptonic.config.categories_helper as categories_helper
 import tt_semileptonic.config.variables_helper as variables_helper
 import tt_semileptonic.config.taggers_helper as taggers_helper
+import tt_semileptonic.config.corrections_helper as corrections_helper
 
 thisdir = os.path.dirname(os.path.abspath(__file__))
 
@@ -33,7 +35,7 @@ def create_new_config(
     """
 
     year = campaign.x.year
-    ver_nano = campaign.x.version
+    vnano = campaign.x.version
 
     if campaign.x.year not in [2022, 2023, 2024]:
         raise NotImplementedError(f"Year f{year} is not implemented")
@@ -468,23 +470,23 @@ def create_new_config(
     # corrections
     #
 
-    cfg.x.vjets_reweighting = vjets_reweighting_cfg()
-    cfg.x.jec, cfg.x.jer = jerc_cfg(campaign, year)
+    cfg.x.vjets_reweighting = corrections_helper.vjets_reweighting_cfg()
+    cfg.x.jec, cfg.x.jer = corrections_helper.jerc_cfg(campaign, year)
     # add the shifts
     add_shifts(cfg)
 
-    cfg.x.btag_sf = btag_sf_cfg(year)
-    cfg.x.toptag_sf = toptag_sf_cfg()
+    cfg.x.btag_sf = corrections_helper.btag_sf_cfg(year)
+    cfg.x.toptag_sf = corrections_helper.toptag_sf_cfg()
 
-    cfg.x.electron_sf = lepton_sf_cfg(cfg, "electron")
+    cfg.x.electron_sf = corrections_helper.lepton_sf_cfg(cfg, "electron")
 
-    cfg.x.muon_sf_names = lepton_sf_cfg(cfg, "muon")[0]
-    cfg.x.muon_id_sf_names = lepton_sf_cfg(cfg, "muon")[1]
-    cfg.x.muon_iso_sf_names = lepton_sf_cfg(cfg, "muon")[2]
+    cfg.x.muon_sf_names = corrections_helper.lepton_sf_cfg(cfg, "muon")[0]
+    cfg.x.muon_id_sf_names = corrections_helper.lepton_sf_cfg(cfg, "muon")[1]
+    cfg.x.muon_iso_sf_names = corrections_helper.lepton_sf_cfg(cfg, "muon")[2]
 
-    cfg.x.met_phi_correction = met_phi_cfg(cfg)  # METPhiConfig object
-    cfg.x.jet_id = jet_id_cfg()["Jet"]  # JetIdConfig object
-    cfg.x.fatjet_id = jet_id_cfg()["FatJet"]  # JetIdConfig object
+    cfg.x.met_phi_correction = corrections_helper.met_phi_cfg(cfg)  # METPhiConfig object
+    cfg.x.jet_id = corrections_helper.jet_id_cfg()["Jet"]  # JetIdConfig object
+    cfg.x.fatjet_id = corrections_helper.jet_id_cfg()["FatJet"]  # JetIdConfig object
 
     # top pt reweighting parameters
     # https://twiki.cern.ch/twiki/bin/viewauth/CMS/TopPtReweighting#TOP_PAG_corrections_based_on_dat?rev=31

@@ -70,5 +70,5 @@ config_2024_small = config_helper.create_new_config(
     campaign_run3_2024_nano_v15.copy(),
     config_name="run3_tt_semileptonic_2024_nano_v15_small",
     config_id=3_24_21,
-    limited_dataset_files=2
+    limit_dataset_files=2
 )
