@@ -22,6 +22,14 @@ import tt_semileptonic.config.corrections_helper as corrections_helper
 
 thisdir = os.path.dirname(os.path.abspath(__file__))
 
+def get_datasets(
+    campaign: od.Campaign,
+) -> list[str]:
+    """
+    Get all dataset names from the campaign without creating full config objects.
+    """
+    return list(campaign.datasets)
+
 def create_new_config(
     analysis: od.Analysis,
     campaign: od.Campaign,
@@ -48,7 +56,7 @@ def create_new_config(
 
     # create config
     cfg = analysis.add_config(campaign, name=config_name, id=config_id)
-    
+
     # add tags to config
     cfg.x.run = 3
     cfg.x.cpn_tag = f"{year}{corr_postfix}"
