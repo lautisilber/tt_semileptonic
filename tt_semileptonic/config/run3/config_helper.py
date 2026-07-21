@@ -16,6 +16,9 @@ import tt_semileptonic.config.datasets_helper as datasets_helper
 import tt_semileptonic.config.defaults_and_groups_helper as defaults_and_groups_helper
 import tt_semileptonic.config.categories_helper as categories_helper
 import tt_semileptonic.config.variables_helper as variables_helper
+import tt_semileptonic.config.taggers_helper as taggers_helper
+
+thisdir = os.path.dirname(os.path.abspath(__file__))
 
 def create_new_config(
     analysis: od.Analysis,
@@ -102,6 +105,9 @@ def create_new_config(
     # ancestor processes) are registered in the config
     verify_config_processes(cfg, warn=True)
 
+    cfg.x.btag_wp = taggers_helper.btag_params(cfg)
+    cfg.x.toptag_wp = taggers_helper.toptag_params(cfg)
+
     # lepton selection parameters
     cfg.x.lepton_selection = DotDict.wrap({
         "mu": {
@@ -168,7 +174,7 @@ def create_new_config(
             "btagger": {
                 "column": "btagDeepFlavB" if year != 2024 else "btagUParTAK4B",
                 # "column": "btagDeepFlavB" if year != 2024 else "btagPNetB",
-                "wp": cfg.x.btag_wp_names.deepjet.medium if year != 2024 else cfg.x.btag_wp_names.UParTAK4.medium,
+                "wp": cfg.x.btag_wp.deepjet.medium if year != 2024 else cfg.x.btag_wp.UParTAK4.medium,
                 # "wp": config.x.btag_wp.deepjet.medium if year != 2024 else config.x.btag_wp.particle_net.medium,
             },
         },
