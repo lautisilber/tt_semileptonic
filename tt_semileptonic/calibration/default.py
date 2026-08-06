@@ -5,7 +5,6 @@ Calibration methods.
 """
 
 from columnflow.calibration import Calibrator, calibrator
-# from columnflow.calibration.cms.jets import jets
 # TODO should we add these later?
 # from columnflow.calibration.cms.egamma import electron_scale_smear
 # from columnflow.calibration.cms.muon import muon_sr
@@ -19,8 +18,6 @@ ak = maybe_import("awkward")
 
 
 @calibrator(
-    # uses={mc_weight, deterministic_seeds, jets},
-    # produces={mc_weight, deterministic_seeds, jets},
     uses={mc_weight, deterministic_seeds},
     produces={mc_weight, deterministic_seeds},
 )
@@ -28,7 +25,6 @@ def default(self: Calibrator, events: ak.Array, **kwargs) -> ak.Array:
     if self.dataset_inst.is_mc:
         events = self[mc_weight](events, **kwargs)
     events = self[deterministic_seeds](events, **kwargs)
-    # events = self[jets](events, **kwargs)
 
     return events
 
