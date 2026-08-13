@@ -136,7 +136,7 @@ def custom_increment_stats(
 
     # increment plain counts
     stats["num_events"] += len(events)
-    stats["num_events_selected"] += ak.sum(event_mask, axis=0)
+    stats["num_events_selected"] += float(ak.sum(event_mask, axis=0))
 
     # get a list of unique process ids present in the chunk
     unique_process_ids = np.unique(events.process_id)
@@ -155,14 +155,14 @@ def custom_increment_stats(
         joinable_mask = True if mask is Ellipsis else mask
 
         # sum of different weights in weight_map for all processes
-        stats[f"sum_{name}"] += ak.sum(weights[mask])
+        stats[f"sum_{name}"] += float(ak.sum(weights[mask]))
 
         # sums per process id
         stats.setdefault(f"sum_{name}_per_process", defaultdict(float))
         for p in unique_process_ids:
-            stats[f"sum_{name}_per_process"][int(p)] += ak.sum(
+            stats[f"sum_{name}_per_process"][int(p)] += float(ak.sum(
                 weights[(events.process_id == p) & joinable_mask],
-            )
+            ))
 
     return events, results
 
