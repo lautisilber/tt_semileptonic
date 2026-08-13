@@ -38,9 +38,10 @@ ak = maybe_import("awkward")
 
 
 @selector(
-    produces={
-        "event",
-    }
+    # produces={
+    #     "event",
+    #     "steps",
+    # }
 )
 def random_event_selector(
     self: Selector,
@@ -100,8 +101,8 @@ def default(
     results = SelectionResult()
 
     # MET filters
-    events, met_filters_results = self[met_filters](events, **kwargs)
-    results.steps.METFilters = met_filters_results.steps.met_filter
+    # events, met_filters_results = self[met_filters](events, **kwargs)
+    # results.steps.METFilters = met_filters_results.steps.met_filter
 
     # random selection
     events, rand_results = self[random_event_selector](events, **kwargs)
@@ -109,6 +110,21 @@ def default(
 
     # combine all steps into the final event mask
     results.event = reduce(and_, results.steps.values())
+
+    # create process ids
+    events = self[process_ids](events, **kwargs)
+
+    # increment stats (this is what fills in the "all events" / "sel. events" counters)
+    events, increment_stats_results = self[increment_stats](
+        events,
+        results,
+        stats,
+        **kwargs,
+    )
+    results += increment_stats_results
+
+    # q = __import__('functools').partial(__import__('os')._exit, 0)
+    # __import__('IPython').embed()
 
     return events, results
 

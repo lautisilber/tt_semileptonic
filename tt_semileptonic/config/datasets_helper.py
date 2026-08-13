@@ -8,8 +8,10 @@ from __future__ import annotations
 import itertools
 import order as od
 import law
+import logging
 
 logger = law.logger.get_logger(__name__)
+logger.setLevel(logging.DEBUG)
 
 def _config_add_dataset(config: od.Config, dataset_name: str) -> od.Dataset:
     try:
@@ -78,7 +80,7 @@ def add_data_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
     
     if log:
-        logger.info(f"Added {len(data_datasets)} data datasets.")
+        logger.debug_once(f"Added {len(data_datasets)} data dataset(s).")
 
 def add_dy_datasets(
         config: od.Config,
@@ -166,7 +168,7 @@ def add_dy_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(datasets_list)} DY datasets.")
+        logger.debug_once(f"Added {len(datasets_list)} DY dataset(s).")
 
 def add_w_lnu_datasets(
         config: od.Config,
@@ -245,7 +247,7 @@ def add_w_lnu_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(datasets_list)} W+jets datasets.")
+        logger.debug_once(f"Added {len(datasets_list)} W+jets dataset(s).")
 
 def add_vv_datasets(
         config: od.Config,
@@ -288,7 +290,7 @@ def add_vv_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} diboson datasets.")
+        logger.debug_once(f"Added {len(dataset_list)} diboson dataset(s).")
 
 def add_tt_sl_datasets(
         config: od.Config,
@@ -331,7 +333,7 @@ def add_tt_sl_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} ttbar-semileptonic datasets.")
+        logger.debug_once(f"Added {len(dataset_list)} ttbar-semileptonic dataset(s).")
 
 def add_tt_dl_datasets(
         config: od.Config,
@@ -374,7 +376,7 @@ def add_tt_dl_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} ttbar-dileptonic datasets.")
+        logger.debug_once(f"Added {len(dataset_list)} ttbar-dileptonic dataset(s).")
 
 def add_tt_fh_datasets(
         config: od.Config,
@@ -417,7 +419,7 @@ def add_tt_fh_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} ttbar-fully hadronic datasets.")
+        logger.debug_once(f"Added {len(dataset_list)} ttbar-fully hadronic dataset(s).")
 
 def add_st_datasets(
         config: od.Config,
@@ -512,7 +514,7 @@ def add_st_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} single top datasets.")
+        logger.debug_once(f"Added {len(dataset_list)} single top dataset(s).")
 
 
 def add_qcd_datasets(
@@ -594,4 +596,4 @@ def add_qcd_datasets(
                 info.n_files = min(info.n_files, limit_dataset_files)
 
     if log:
-        logger.info(f"Added {len(dataset_list)} QCD datasets.")
+        logger.debug_once(f"Added {len(dataset_list)} QCD dataset(s).")

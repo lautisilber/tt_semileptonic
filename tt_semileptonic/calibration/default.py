@@ -23,7 +23,10 @@ ak = maybe_import("awkward")
 )
 def default(self: Calibrator, events: ak.Array, **kwargs) -> ak.Array:
     if self.dataset_inst.is_mc:
+        # Stores the mc_weight in events
         events = self[mc_weight](events, **kwargs)
+    
+    # Produces deterministic event or jet seeds and stores them in events
     events = self[deterministic_seeds](events, **kwargs)
 
     return events
