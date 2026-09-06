@@ -4,7 +4,7 @@ from columnflow.selection import Selector, selector
 from columnflow.selection import SelectionResult
 from columnflow.production.cms.mc_weight import mc_weight
 from columnflow.production.processes import process_ids
-# from columnflow.production.categories import category_ids
+from columnflow.production.categories import category_ids
 
 from operator import and_
 from functools import reduce
@@ -12,11 +12,14 @@ from functools import reduce
 # maybe import awkward in case this Selector is actually run, this needs to be set as columnflow
 # would else give an error during setup, as these packages are not in the default sandbox
 from columnflow.util import maybe_import
+from columnflow.columnar_util import set_ak_column
 
 ak = maybe_import("awkward")
 np = maybe_import("numpy")
 
 from collections import defaultdict, OrderedDict
+
+from tt_semileptonic.production.lepton import lepton_producer
 
 
 # First, define an internal jet Selector to be used by the exposed Selector
@@ -115,6 +118,60 @@ def fatjet_selection_with_result(self: Selector, events: ak.Array, **kwargs) -> 
     )
 
 
+# Next, define an internal lepton Selector that decides the channel of each event.
+# `channel_id` is NOT a NanoAOD column: it is created here (1 = electron channel,
+# 2 = muon channel, 0 = neither) and written into `events` so that downstream
+# producers (e.g. `lepton_producer`) and categorizers (`cat_1e`, `cat_1m`) can use it.
+
+@selector(
+    uses={
+        "Muon.pt", "Muon.eta",
+        "Electron.pt", "Electron.eta",
+    },
+    produces={
+        "channel_id",
+    },
+)
+def lepton_selection(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Array, SelectionResult]:
+    # simple muon / electron definitions (loose, for a first working version)
+    muon_mask = (events.Muon.pt > 30.0) & (abs(events.Muon.eta) < 2.4)
+    electron_mask = (events.Electron.pt > 35.0) & (abs(events.Electron.eta) < 2.5)
+
+    n_muon = ak.sum(muon_mask, axis=1)
+    n_electron = ak.sum(electron_mask, axis=1)
+
+    # channel ids as defined in the analysis config (cfg.add_channel("e", id=1) / ("mu", id=2))
+    ch_e = self.config_inst.get_channel("e").id
+    ch_mu = self.config_inst.get_channel("mu").id
+
+    # exactly one lepton of a single flavour -> assign that channel, otherwise 0
+    channel_id = ak.zeros_like(events.event, dtype=np.int8)
+    channel_id = ak.where((n_muon == 1) & (n_electron == 0), np.int8(ch_mu), channel_id)
+    channel_id = ak.where((n_electron == 1) & (n_muon == 0), np.int8(ch_e), channel_id)
+
+    # write the new column
+    events = set_ak_column(events, "channel_id", channel_id)
+
+    # indices of the selected leptons, kept for ReduceEvents
+    muon_indices = ak.local_index(events.Muon.pt)[muon_mask]
+    electron_indices = ak.local_index(events.Electron.pt)[electron_mask]
+
+    return events, SelectionResult(
+        steps={
+            # require the event to fall into exactly one lepton channel
+            "lepton": (channel_id != 0),
+        },
+        objects={
+            "Muon": {"Muon": muon_indices},
+            "Electron": {"Electron": electron_indices},
+        },
+        aux={
+            "n_muon": n_muon,
+            "n_electron": n_electron,
+        },
+    )
+
+
 # Implement the task to update the stats object
 
 @selector(uses={"process_id", "mc_weight"})
@@ -173,12 +230,13 @@ def custom_increment_stats(
     # sure that you have all the relevant information
     uses={
         # mc_weight, jet_selection_with_result, fatjet_selection_with_result, custom_increment_stats,
-        mc_weight, jet_selection_with_result, custom_increment_stats,
+        mc_weight, jet_selection_with_result, lepton_selection, custom_increment_stats,
         process_ids,
-        # category_ids
+        category_ids,
+        lepton_producer
     },
     produces={
-        mc_weight, process_ids,
+        mc_weight, lepton_selection, process_ids, category_ids, lepton_producer
     },
 
     # this is our top level Selector, so we need to make it reachable
@@ -205,7 +263,14 @@ def default(
     # events, fatjet_results = self[fatjet_selection_with_result](events, **kwargs)
     # results += fatjet_results
 
-    # events = self[category_ids](events, results=results, **kwargs) # needs categories
+    # lepton selection: decides the channel (writes the `channel_id` column)
+    events, lepton_results = self[lepton_selection](events, **kwargs)
+    results += lepton_results
+
+    # merge Muon/Electron into a single `Lepton` collection based on `channel_id`
+    events = self[lepton_producer](events, **kwargs)
+
+    events = self[category_ids](events, results=results, **kwargs) # needs categories
 
     # combined event selection after all steps
     event_sel = reduce(and_, results.steps.values())

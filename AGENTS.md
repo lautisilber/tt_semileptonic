@@ -1,360 +1,134 @@
-# AGENTS.md: tt_semileptonic Workflow Guide
+# AGENTS.md — tt_semileptonic
 
-This repository implements a tt_bar + jets analysis using Columnflow (Law-based framework). Patterns documented below are specific to `tt_semileptonic` and should **not** be copied verbatim—adapt the structure to your use case.
+HEP analysis (CMS, tt → semileptonic, top variables) built on the **columnflow**
+framework (law + order). Learning project: built up **incrementally**, one task in
+the columnflow graph at a time — each task must actually run before starting the next.
+See [README.md](README.md) for the physics scope and the task-graph description.
 
----
-
-## Directory Structure
-
-```
-tt_semileptonic/
-├── tasks/                 # Task orchestration files (via law.cfg)
-│   ├── base.py            # Custom BaseTask with task_namespace="tt_semileptonic"
-│   ├── config.py          # Config processing
-│   └── reduction.toml     # Reduction workflow definitions
-├── selection/             # @selector functions (muons, jets definition)
-│   └── example.py         # muon_selection(), jet_selection()
-├── categorization/        # @categorizer functions (process categories)
-│   └── example.py         # cat_incl(), cat_2j() etc.
-├── calibration/           # @calibrator for JEC smearing
-│   └── example.py         # jet_jec_calibrator()
-├── production/            # Producers (observable extraction)
-│   └── example.py         # jet_features() producing {ht, n_jet, dijet.*}
-├── inference/             # ML model definitions (@dnnmodel)
-│   └── example.py         # DNN model with categories/processes defined
-├── reduction/             # @reducer functions (column addition)
-│   └── example.py         # bbbar_features() adding Jet.from_b_hadron
-├── plotting/              # Custom plot functions
-│   └── example.py         # plot_*_distribution() helpers
-└── config/                # Columnflow config objects & store parts
-    └── run3/
-        └── analysis_tt_semileptonic.py  # Main Analysis object
-```
+This file is written from the real code. The previous version was auto-generated and
+hallucinated large parts of the columnflow API — if something here disagrees with the
+code, trust the code and fix this file.
 
 ---
 
-## Core Patterns by Pattern Type
+## Setup
 
-### **PRODUCERS** (`@producer @classmethod`)
-Used to extract observables from events. Use `uses=` for inputs, `produces=` for outputs.
-
-```python
-from tt_semileptonic.tasks.base import TT_SEMILEPTONICTask
-from law.config_groups.producer import producer
-
-@producer(cls=TT_SEMILEPTONICTask, uses=["{config}"] if config else None)
-def my_producer(events, *args):
-    """Extract observables from events."""
-    cols = {}
-    
-    # Extract single jets
-    jets = events.Jet  # auto-expanded to {pt, eta, phi, mass}
-    pts = [jet.pt for jet in ak.flatten(jets)]
-    cols.update(Jet.pt = sum(abs(p) for p in abs(pts)))
-    
-    # Or with dijets directly (using Jet collection)
-    from tt_semileptonic.column_ops import jets_to_dijets
-    dijets = jets_to_dijets(jets)  # List of (jet1, jet2) tuples
-    cols.update(
-        ht=sum(abs(jet.pt) for jet in events.Jet),
-        n_ak4_jet=ak.num(events.Jet.pt, axis=1),
-        dijets=dijets,  # Auto-expanded to {dijet_mass, dijet_delta_r, dijet_pt}
-    )
-    
-    return cols
-```
-
-**Note:** The production example `production/example.py` builds `ht` via list comprehension and pads jets to 2 using `ak.pad_none(events.Jet, 2)` before pairing.
-
----
-
-### **SELECTORS** (`@selector`)
-Define events that pass selection criteria for subsequent steps. Returns `(events, SelectionResult)`.
-
-```python
-from tt_semileptonic.tasks.base import TT_SEMILEPTONICTask
-from law.config_groups.selector import selector
-
-@selector(cls=TT_SEMILEPTONICTask, uses=["{muons}"])
-def muon_selection(events):
-    """Select signal-like muon definition."""
-    muons = events.Muon  # Auto-expanded to {pt, eta, phi, mass}
-    
-    # Muon selection criteria: pt ≥ 20, |eta| < 2.1, exactly one muon in event
-    pass_pt_mask = muons.pt >= 20.0
-    pass_eta_mask = np.abs(muons.eta) < 2.1
-    n_mu_in_event = ak.num(events.Muon.p, axis=1) == 1
-    
-    # Combined selection (events mask)
-    events_pass = (pass_pt_mask & pass_eta_mask & n_mu_in_event).astype(int)
-    
-    # Resulting muons after cut
-    selected_pt = muons.pt[pass_pt_mask]
-    selected_mass = muons.mass[pass_pt_mask & pass_eta_mask]
-    
-    return events, SelectionResult(
-        steps={
-            "input": {Muon: "muons"},  # Source columns used
-        },
-        objects={
-           Muon: (selected_pt, selected_eta, selected_phi, selected_mass),  # Tuple per collection key
-        }
-    )
-```
-
-**Note:** The example `selection/example.py` uses `SelectionResult.steps` for cut documentation and returns `(events, SelectionResult)` with both `steps` dict (source mapping) and `objects` dict (post-selection column values).
-
----
-
-### **CATEGORIZATION** (`@categorizer`)
-Define process categories using the current event state. Returns category masks.
-
-```python
-from tt_semileptonic.tasks.base import TT_SEMILEPTONICTask
-from law.config_groups.categorization import categorizer
-
-@categorizer(uses=["{muons}", "{jets}"])  # Input columns for boundary checking
-def cat_incl(events):
-    """Inclusive category mask."""
-    return {events: np.ones(len(events), dtype=np.bool8)}
-
-@categorizer(uses=["{muons}", "Jet.pt"})  # Requires Jet.pt column explicitly
-def cat_2j(events, events_Jet_pt=None):
-    """Category requiring at least two jets (pt-based)."""
-    if events_Jet_pt is not None:
-        n_jets = ak.num(events_Jet_pt, axis=1)
-    else:
-        # Fall back to raw Jet count
-        n_jets = ak.num(events.Jet.pt, axis=1)
-    
-    mask = n_jets >= 2
-    
-    return {events: mask}
-```
-
----
-
-### **CALIBRATION** (`@calibrator`)
-Apply JEC corrections with deterministic seeds and smearing. Returns corrected event columns.
-
-```python
-from tt_semileptonic.tasks.base import TT_SEMILEPTONICTask
-from law.config_groups.calibration import calibrator
-
-@calibrator(uses=["events.Jet"], produces=["{Jet.pt_jec_up, Jet.mass_jec_up, ...}"])
-def jet_jec_calibrator(events, seed=42, smearing=None):
-    """Apply JEC up/down with deterministic runs."""
-    
-    # Deterministic seed for ML training stability
-    np.random.seed(seed)
-    
-    if smearing is None:
-        smearing = 0.05
-    
-    # Generate smear factor (1.05 up, 0.95 down, 1.0 nominal)
-    def smear(jet):
-        jitter = np.random.uniform(1 - smearing, 1 + smearing)
-        corrected = jet.pt * jitter
-        return {'pt': corrected, 'mass': corrected}
-    ```
-
----
-
-### **ML MODEL** (`class MLModel`)
-Define neural networks for classifier/regression. Use `Route | str` types for inputs/outputs.
-
-```python
-from ctapike.ml.models import DNNModel
-from tt_semileptonic.tasks.base import TT_SEMILEPTONICTask
-from law.config_groups.inference import dnnmodel
-
-class MyDNNModel(DNNModel):
-    """DNN classifier for signal/background discrimination."""
-    
-    single_config = True
-    
-    uses = (str, str)  # e.g. ("Jet.pt", "Muon.pt")
-    produces = (str,)   # e.g. ("response:",)
-    
-    training_calibrators = (jet_jec_calibrator,)  # Apply before training
-    training_selecs = (muon_definition_, jet_definition_)  # Required for training
-    
-    def config(self, inputs, outputs, task):
-        """Configure network architecture."""
-        return DNNModel(
-            name="DNN_tt_2024",
-            hidden_layers=3,
-            activation="relu",
-        )
-    
-    def predict(self, events, config_inst, category_inst):
-        """Forward pass through DNN."""
-        from tt_semileptonic.column_ops import jets_to_dijets
-        dijets = jets_to_dijets(events.Jet)
-        
-        inputs_dict = {"dijet_mass": [d[0].mass * d[1].mass for d in dijets]}
-        return super().predict(inputs_dict, config_inst=..., yaxis=None)
-
-# Process and category configuration (from example.py)
-class DNNModelConfig(MLModel.config):
-    class incl:  # For inclusive category
-        processes = ["ST"]
-        parameters = {"luminosity_unc": 0.9317, "inv_lum_unc": 0.9826}
-    
-    class ttbar_cat:  # For TT-bar category (TT):
-        pass  # Inherits same structure as above
-```
-
-**Critical:** Model configuration via `processes=` lists and `parameters=` dict for uncertainty terms in `tt_semileptonic/inference/example.py` style.
-
----
-
-### **PLOT FUNCTIONS**
-Custom plot functions receive `(hists, config_inst, category_inst, variable_insts, style_config, yscale, process_settings, ...)`.
-
-```python
-from matplotlib import pyplot as plt
-from tt_semileptonic.plotting.helper import (
-    apply_variable_settings,
-    remove_residual_axis,
-    add_uncertainty_envelope
-)
-
-def plot_dijet_mass(hists, config_inst, category_inst, var="dijet_mass", yscale=None):
-    # Helper: normalize histogram for normalization histograms
-    hists_norm = remove_residual_axis(hists=vars(), dim="event")
-    
-    # Add statistical uncertainties
-    fig, ax = plt.subplots()
-    plot_data = hists_norm[hists_norm.process]  # Get specific process
-    
-    # Apply columnflow helper for settings
-    style_config = apply_variable_settings(
-        variables=dict(dijet_mass={"min": 0.0})
-    )
-    
-    return fig, ax
-
-def plot_with_uncertainties(hists, config_inst, category_inst, var, yscale):
-    # Plot with luminosity uncertainties and jet energy scale variations
-    from tt_semileptonic.column_ops import add_jes_syst
-    
-    return fig, ax
-```
-
----
-
-## Configuration Hierarchy
-
-### Columnflow Config (`config.py`)
-- Define config objects for each analysis node
-- Include: sandboxes, input stores, hooks (reducer, categorization)
-- Example structure:
-
-```python
-class MyAnalysis(Analysis):
-    # Sandbox declarations
-    sandbox = "bash"  # Or "cmssw", "columnflow_bash"
-    sandbox_mwsf = "bash"  # For event weighting
-    
-    # Store parts (input/output stores)
-    class store_parts:
-        input = {"Muon": [1]}
-        output = {"Jet_features": ["output"], "dijet_features": ["output"]}
-    
-    # Hooks: which modules run where
-    hist_hooks = [
-        ("hist_reducer", 0, lambda events: create_histograms(events)),
-    ]
-```
-
----
-
-## Setup & Execution
-
-### Environment Setup (from `setup.sh`)
-Source before running tasks:
 ```bash
-source /data/dust/user/lsilberg/columnflow/tt_semileptonic/modules/columnflow/setup.sh 2>/dev/null \
-    || source "${CF_SETUP_SCRIPT:-/path/to/setup.sh}"
-
-export TT_SEMILEPTONIC_BASE=/data/dust/user/lsilberg/columnflow/tt_semileptonic
-export TT_SEMILEPTONIC_SETUP="$(pwd)"
-
-# Run workflow
-law start -w tt_semileptonic/tasks/reduction.toml
+cd /data/dust/user/lsilberg/columnflow/tt_semileptonic_2
+source setup.sh dev          # "dev" is the setup name (.setups/dev.sh); NOT plain `source setup.sh`
 ```
 
-### Law Module Definitions (`law.cfg`)
-Module declarations go at `/project_root/law.cfg`. Include:
-- Custom task modules (`tt_semileptonic.tasks`)
-- Columnflow standard modules (columnflow.core, columnflow.column_ops)
-- cmsdb campaign infrastructure for CMSSW sandbox
+Re-running the setup needs a fresh shell (it refuses if already set up).
 
----
+### Input files are read from the local dcache mount, not XRootD
 
-## Key Dependencies
+`law.cfg` `[outputs] lfn_sources` lists `local_desy_dcache` (`base: /pnfs/desy.de/cms/tier2`)
+first, so input NanoAOD is read via the POSIX filesystem. This is deliberate: the XRootD
+client bundled in the columnar sandbox **deadlocks in its `atexit` handler** after a
+`root://` read (`XrdCl::DefaultEnv::Finalize` → `Poller::Stop` blocked on a semaphore).
+The task finishes its work and writes output, then the process never exits and the parent
+`law` sits in `waitpid` forever. `mttbar` avoids this the same way. If a needed LFN is not
+on the DESY Tier-2 disk, columnflow falls through to the XRootD redirectors and the hang
+can return for that branch. The `[local_desy_dcache]` section also needs
+`rucio_report_access: False` (cf's cms flavor requires the entry on every lfn source).
 
-```python
-# core law utilities
-from tt_semileptonic.tasks.base import TT_SEMILEPTONICTask
+### Grid proxy — still needed for job submission / remote fallback
 
-# Columnflow operations
-from columnflow.column_ops import (
-    ak,  # Array manipulation
-    jets_to_dijets,     # Pairing logic
-    add_jes_syst        # JES uncertainties
-)
+Tasks that read NanoAOD from the remote redirector are guarded by columnflow's
+`ensure_proxy`. If the proxy is missing/expired they fail with
+`voms-proxy-info failed` / sandbox exit code 40. Renew:
 
-# cmsdb infrastructure
-import cmsdb
-from cmsdb.campaigns.run3.config import (
-    ColumnflowConfig,  # Base config class
-    StoreParts         # For input/output store setup
-)
-
-# Linter configs
-# .flake8: max-line-length=120, ignore E128,E306,E402,E722,E731,W504,Q003
+```bash
+voms-proxy-init -voms cms -rfc -valid 192:00
+voms-proxy-info --all      # check "timeleft" on both the proxy and the "VO cms extension"
 ```
 
+`cf.GetDatasetLFNs` and already-cached `cf.CalibrateEvents` outputs do **not** need a
+live proxy, which is why earlier steps can look fine while `SelectEvents` fails.
+
 ---
 
-## Pattern-Specific Implementation Notes
+## Running tasks
 
-### Selection Result Structure
-All selectors return `(events, SelectionResult)` with:
-- `steps`: dict of `{source_name: source_type}` (e.g., `{"Muon": "muons"}`)
-- `objects`: tuple of column values ordered by collection order (e.g., `(pt, eta, phi, mass)`)
+Wrapper scripts live in [scripts/](scripts/) (`run_cf_getdatasetlfns.sh`,
+`run_cf_calibrateevents.sh`, `run_cf_selectevents.sh`). Canonical test invocation:
 
-### Categorization Boundaries
-Categories return dict: `{events: mask}`, where mask is bool array indicating pass events. Multiple boundaries in one categorizer allowed via separate function or multiple returns.
-
-### Store Parts Pattern
-Use `@store_parts` for columnflow input/output store configuration:
-```python
-class StoreParts(StorePartGroup):
-    from = {"Muon": ["input_store"]}  # Source path
-    to   = {"Jet_features": ["output_store", "reducer_output"]}  # Target paths
-    # Optional: exclude=, modifiers= for filtering/editing before writing
+```bash
+law run cf.SelectEvents --dataset tt_sl_powheg --version test \
+    --calibrators default --selector default
 ```
 
----
-
-## Testing Checklist
-
-- [ ] All `@decorator` functions return expected types (SelectionResult, dict, cat mask)
-- [ ] Config objects declare sandboxes correctly (bash vs cmssw)
-- [ ] Store parts include all inputs/outputs for input/output store setup
-- [ ] Histogram hooks define proper `(config_group_id, hook_type)` pairs
-- [ ] MLModel uses correct `uses=` / `produces=` tuple types (Route|str)
-- [ ] Law modules registered in `law.cfg` at project root level
+- **`law run` takes minutes** (streams ~800 MB files over xrootd). The user runs and
+  monitors these themselves — do not block a session waiting on one; hand it back.
+- Test dataset: `tt_sl_powheg`. Test version: `test`.
+- Default config `run3_tt_semileptonic_2024_nano_v15_small` (`limit_dataset_files=2`).
+- `--calibrator` (singular) up to `CalibrateEvents`; `--calibrators` (plural) from
+  `SelectEvents` on.
+- Task namespace is `cf` (e.g. `cf.SelectEvents`), set in `law.cfg`.
 
 ---
 
-## Common Pitfalls to Avoid
+## Layout
 
-1. **Don't** copy example patterns verbatim—use as structural guides only
-2. **Remember**: `SelectionResult` requires both `steps` and `objects` dict keys
-3. **Check**: Store parts need explicit `from=` (source) and `to=` targets (destinations)
-4. **Verify**: MLModel classes must use `Route | str` type annotations, not raw strings
-5. **Note**: Law modules are declared in top-level `law.cfg`, not per-file imports
+| Path | What |
+|---|---|
+| `tt_semileptonic/config/run3/analysis_tt_semileptonic.py` | `order.Analysis` object — the entry point named in `law.cfg` |
+| `tt_semileptonic/config/run3/config_helper.py` | builds the `order.Config`: datasets, `x.lepton_selection` / `x.jet_selection` params, `x.keep_columns`, channels (`e`=1, `mu`=2), taggers |
+| `tt_semileptonic/config/*_helper.py` | categories, variables, corrections, datasets, defaults/groups |
+| `tt_semileptonic/{calibration,selection,production,categorization,reduction}/` | `@calibrator` / `@selector` / `@producer` / `@categorizer` / `@reducer` functions. `default.py` = current work, `example.py` = columnflow template, `*_old.py` = scratch |
+| `tt_semileptonic/tasks/base.py` | `TT_SEMILEPTONICTask(BaseTask)` with `task_namespace="tt_semileptonic"` (custom tasks only; the `cf.*` tasks are columnflow's) |
+| `modules/columnflow/` | the framework (submodule) — read here for real API |
+| `modules/cmsdb/` | dataset/campaign/process definitions (submodule) |
+| `../mttbar/` | the analysis this is derived from — a **working** reference for selectors, `channel_id`, categories, etc. (its API can be ahead of ours; verify before copying) |
+
+Decorator imports are `from columnflow.selection import Selector, selector`,
+`from columnflow.production import Producer, producer`, etc. — plain columnflow, no
+custom decorator layer.
+
+---
+
+## Framework gotchas
+
+- **`channel_id` is not a NanoAOD column.** It is produced by the selector
+  (1 = e channel, 2 = mu channel, 0 = neither), then written with
+  `set_ak_column(events, "channel_id", ...)`. `lepton_producer`, `cat_1e`, `cat_1m`
+  all `uses={"channel_id"}` and will raise `did not receive any columns matching:
+  channel_id` if no lepton-selection step ran first. Reference impl:
+  `../mttbar/mtt/selection/lepton.py`.
+- **`category_ids` runs a categorizer for *every leaf category*** (see
+  `columnflow/production/categories.py::category_ids_init`), not just the ones you ask
+  for on the CLI. Adding a category whose `@categorizer` reads a column that isn't
+  produced yet breaks `SelectEvents`. This is why top-tag categories (`0t`/`1t`) are
+  currently commented out in `config/categories_helper.py` — `cat_0t`/`cat_1t` need
+  `cutflow.n_toptag_delta_r_lepton`.
+- A `@selector`/`@producer` declares `uses=` (input columns it will read) and
+  `produces=` (columns it creates); columnflow checks these against the array and
+  raises if a declared column is missing. Sub-selectors/producers passed in `uses`
+  are called as `events = self[sub](events, **kwargs)`.
+- `SelectionResult(steps=..., objects=..., aux=...)`: `steps` = per-event bool masks
+  ANDed into `results.event`; `objects` = index arrays applied in `ReduceEvents`;
+  `aux` = free-form extras. Results combine with `results += other`.
+
+---
+
+## Current status
+
+| Task | State |
+|---|---|
+| `cf.GetDatasetLFNs` | ✅ works |
+| `cf.CalibrateEvents` (`--calibrator default`) | ✅ works |
+| `cf.SelectEvents` (`--selector default`) | ✅ works — clean end-to-end run, both branches, ~42% selection efficiency (≥2 jets AND exactly one e or µ). `lepton_selection` produces `channel_id`; `category_ids` does channel categories only |
+| `cf.ReduceEvents` | ⏭️ next |
+| beyond | ⛔ not started |
+
+### Known config inconsistencies (not yet cleaned up)
+
+- `config/defaults_and_groups_helper.py`: `default_calibrator` = `"skip_jecunc"`, but
+  only `default` exists in `calibration/default.py` (`skip_jecunc` is commented out).
+  Scripts pass `--calibrator default` explicitly, so it works.
+- Same file: `default_categories` lists `1m__0t`, `1e__1t`, … which won't exist while
+  the `0t`/`1t` categories are commented out. Matters for later `--categories`
+  defaults (plotting), not for `SelectEvents`.
+- `law.cfg` `production_modules` references `tt_semileptonic.production.default`, which
+  doesn't exist (the file is `production/lepton.py`). Harmless for now; fix when adding
+  a producer.
