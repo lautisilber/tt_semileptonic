@@ -9,6 +9,10 @@ This file is written from the real code. The previous version was auto-generated
 hallucinated large parts of the columnflow API — if something here disagrees with the
 code, trust the code and fix this file.
 
+Companion docs: [CHANGES.md](CHANGES.md) (running change log) and
+[ISSUES.md](ISSUES.md) (framework bugs we hit and worked around — the XRootD exit
+hang and the `cf.PlotCutflow` regression).
+
 ---
 
 ## Setup
@@ -131,9 +135,30 @@ group with `law run cf.SelectEventsWrapper --datasets <group> --branch 0 …`.
 - `config/defaults_and_groups_helper.py`: `default_calibrator` = `"skip_jecunc"`, but
   only `default` exists in `calibration/default.py` (`skip_jecunc` is commented out).
   Scripts pass `--calibrator default` explicitly, so it works.
-- Same file: `default_categories` lists `1m__0t`, `1e__1t`, … which won't exist while
-  the `0t`/`1t` categories are commented out. Matters for later `--categories`
-  defaults (plotting), not for `SelectEvents`.
 - `law.cfg` `production_modules` references `tt_semileptonic.production.default`, which
   doesn't exist (the file is `production/lepton.py`). Harmless for now; fix when adding
   a producer.
+
+### Cutflow / plotting
+
+`config/defaults_and_groups_helper.py` has been trimmed to what currently exists (the
+full m(ttbar)-style config is kept commented for later):
+
+- `default_categories` / `category_groups["default"]` = `["incl", "1e", "1m"]`
+- `selector_step_groups["default"]` = `["lepton", "jet"]` (must match the
+  `SelectionResult` step names — `missing_selector_step_strategy = raise`)
+
+Cutflow plot (needs all `SelectEvents` branches merged, so `--branch 0` does not apply;
+`_small` config keeps it cheap):
+
+```bash
+law run cf.PlotCutflow --version test --calibrators default --selector default \
+    --datasets mc --processes default --categories incl --selector-steps lepton,jet
+```
+
+Two things this depends on:
+- `custom_increment_stats` writes `num_events_per_process` (columnflow's
+  `normalization_weights`, run in `cf.MergeSelectionMasks` for MC, needs it).
+- `cf.PlotCutflow` uses `tt_semileptonic.plotting.cutflow.plot_cutflow` (set in
+  `law.cfg` `[luigi_cf.PlotCutflow]`), a wrapper working around columnflow PR #783
+  which left the variable axis unreduced. See CHANGES.md.

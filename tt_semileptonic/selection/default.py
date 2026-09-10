@@ -36,7 +36,7 @@ from tt_semileptonic.production.lepton import lepton_producer
     # pass any other variable to the selector class
     some_auxiliary_variable=True,
 )
-def jet_selection_with_result(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Array, SelectionResult]:
+def jet_selection(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Array, SelectionResult]:
     # require an object of the Jet collection to have at least 20 GeV pt and at most 2.4 eta to be
     # considered a Jet in our analysis
     jet_mask = ((events.Jet.pt > 20.0) & (abs(events.Jet.eta) < 2.4))
@@ -90,7 +90,7 @@ def jet_selection_with_result(self: Selector, events: ak.Array, **kwargs) -> tup
 
     # ...
 )
-def fatjet_selection_with_result(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Array, SelectionResult]:
+def fatjet_selection(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Array, SelectionResult]:
     # require an object of the FatJet collection to have at least 40 GeV pt to be
     # considered a FatJet in our analysis
     fatjet_mask = (events.FatJet.pt > 40.0)
@@ -196,6 +196,16 @@ def custom_increment_stats(
     # get a list of unique process ids present in the chunk
     unique_process_ids = np.unique(events.process_id)
 
+    # per-process event counts: required by columnflow's `normalization_weights` producer,
+    # which is run for MC inside cf.MergeSelectionMasks and reads `num_events_per_process`
+    # from the merged selection stats (a KeyError here breaks the whole plotting chain)
+    stats.setdefault("num_events_per_process", defaultdict(int))
+    stats.setdefault("num_events_selected_per_process", defaultdict(int))
+    for p in unique_process_ids:
+        proc_mask = events.process_id == p
+        stats["num_events_per_process"][int(p)] += int(ak.sum(proc_mask))
+        stats["num_events_selected_per_process"][int(p)] += int(ak.sum(proc_mask & event_mask))
+
     # create a map of entry names to (weight, mask) pairs that will be written to stats
     weight_map = OrderedDict()
     if self.dataset_inst.is_mc:
@@ -229,8 +239,8 @@ def custom_increment_stats(
     # e.g., if we want to use some internal Selector, make
     # sure that you have all the relevant information
     uses={
-        # mc_weight, jet_selection_with_result, fatjet_selection_with_result, custom_increment_stats,
-        mc_weight, jet_selection_with_result, lepton_selection, custom_increment_stats,
+        # mc_weight, jet_selection, fatjet_selection, custom_increment_stats,
+        mc_weight, jet_selection, lepton_selection, custom_increment_stats,
         process_ids,
         category_ids,
         lepton_producer
@@ -256,11 +266,11 @@ def default(
         events = self[mc_weight](events, **kwargs)
 
     # call the first internal selector, the jet selector, and save its result
-    events, jet_results = self[jet_selection_with_result](events, **kwargs)
+    events, jet_results = self[jet_selection](events, **kwargs)
     results += jet_results
 
     # # call the second internal selector, the fatjet selector, and save its result
-    # events, fatjet_results = self[fatjet_selection_with_result](events, **kwargs)
+    # events, fatjet_results = self[fatjet_selection](events, **kwargs)
     # results += fatjet_results
 
     # lepton selection: decides the channel (writes the `channel_id` column)

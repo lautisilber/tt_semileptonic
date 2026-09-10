@@ -5,6 +5,74 @@ commit's worth of work.
 
 ---
 
+## Work around columnflow cf.PlotCutflow regression (PR #783)
+
+columnflow PR #783 replaced `h[{"category": sum, self.variable: sum}]` in
+`cf.PlotCutflow.run` with `select_category_bins(...)`, which reduces only the
+`category` axis. The variable axis (`event` by default) is left in place, so the 1D
+`plot_cutflow` gets a 2D `(step, <variable>)` histogram and `hist.plot_stack` raises
+`NotImplementedError: Please project to 1D before calling plot`. Still present on
+columnflow `origin/master`.
+
+Fix entirely in our code (no submodule edit):
+
+- `tt_semileptonic/plotting/cutflow.py`: a `plot_cutflow` wrapper that sums every axis
+  except `step`, then calls columnflow's `plot_cutflow`.
+- `tt_semileptonic/plotting/__init__` → `__init__.py` (it was not a valid package, so
+  nothing under `tt_semileptonic.plotting` could be imported).
+- `law.cfg` `[luigi_cf.PlotCutflow] plot_function: tt_semileptonic.plotting.cutflow.plot_cutflow`
+  makes it the default (law forwards `[luigi_<family>]` → luigi `[<family>]`; a plain
+  `[cf.PlotCutflow]` section is not read by luigi).
+
+Remove all three once columnflow reduces the variable axis itself.
+
+---
+
+## custom_increment_stats: add per-process event counts
+
+`selection/default.py`: `custom_increment_stats` now also writes
+`num_events_per_process` and `num_events_selected_per_process` to the stats dict.
+
+`cf.MergeSelectionMasks` runs columnflow's `normalization_weights` producer for MC
+(to add the `normalization_weight` column), and its setup reads
+`stats["num_events_per_process"]` from the merged selection stats — a `KeyError` there
+broke the whole plotting / normalization chain.
+
+Note: existing `cf.SelectEvents` stats files predating this change lack the key and must
+be regenerated (`--remove-output cf.CalibrateEvents,a,True`, or delete the
+`cf.SelectEvents` + `cf.MergeSelectionStats` output dirs for the dataset).
+
+---
+
+## Trim cutflow / plotting defaults to what currently exists
+
+`defaults_and_groups_helper.py`: two more mttbar-ported defaults referenced things that
+don't exist yet, so any cutflow/plotting task that fell back to them crashed. Fixed;
+the full m(ttbar)-style config is kept commented above each, with an explanation, to be
+re-enabled as the selection grows.
+
+- `default_categories` (and therefore `category_groups["default"]`):
+  `["1m", "1e", "1m__0t", …]` → `["incl", "1e", "1m"]`. The `__0t`/`__1t` categories
+  don't exist while top-tagging is disabled.
+- `selector_step_groups["default"]`:
+  `["METFilters", "DileptonVeto", …, "Lepton"]` → `["lepton", "jet"]`. Step names must
+  match the `SelectionResult` steps produced by `selection/default.py`
+  (`missing_selector_step_strategy = raise` in `law.cfg`). Added `lepton` / `jet`
+  labels.
+
+Cutflow plot for MC:
+
+```bash
+law run cf.PlotCutflow --version test --calibrators default --selector default \
+    --datasets mc --processes default --categories incl --selector-steps lepton,jet
+```
+
+`cf.PlotCutflow` merges all `cf.SelectEvents` branches (via `cf.MergeSelectionMasks`),
+so `--branch 0` does not apply to it; the `_small` config (2 files/dataset) keeps it
+cheap. Needs `cf.SelectEvents` branch 1 for the datasets being plotted.
+
+---
+
 ## Fix dataset and process groups for the 2024 dataset names
 
 `defaults_and_groups_helper.py`: the `data`, `bkg` and `signal` dataset groups (and the

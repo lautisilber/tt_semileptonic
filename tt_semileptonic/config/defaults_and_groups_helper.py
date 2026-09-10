@@ -28,8 +28,16 @@ def set_defaults(
         "hist_producer": "cf_default",
         "ml_model": None,
         "inference_model": "an_v12_simplified__m7000_w70",
+        # Target configuration (re-enable once top-tagging exists): the 0t/1t
+        # categories are commented out in config/categories_helper.py because their
+        # categorizers read cutflow.n_toptag_delta_r_lepton, which is not produced
+        # yet, so 1m__0t / 1e__1t / ... do not exist as categories and every task
+        # that falls back to this default (plotting, cutflow, ...) would crash.
+        # "categories": [
+        #     "1m", "1e", "1m__0t", "1e__0t", "1m__1t", "1e__1t",
+        # ],
         "categories": [
-            "1m", "1e", "1m__0t", "1e__0t", "1m__1t", "1e__1t",
+            "incl", "1e", "1m",
         ],
         "variables": [
             "electron_pt", "muon_pt",
@@ -338,10 +346,19 @@ def set_selector_steps(
     run = config.campaign.x.run
     tag = config.x.cpn_tag
 
+    # Target configuration (re-enable step by step as the selector grows): these are
+    # the selector step names the full m(ttbar)-style selection is meant to produce.
+    # cf.CreateCutflowHistograms / cf.PlotCutflow raise on any step not present in the
+    # SelectionResult (missing_selector_step_strategy = raise in law.cfg), and right now
+    # tt_semileptonic/selection/default.py only produces "jet" and "lepton".
+    # "default": ["METFilters", "DileptonVeto", "AllHadronicVeto", "JetLepton2DCut", "BJet", "Jet", "MET", "Lepton"],
     base_steps = {
-        "default": ["METFilters", "DileptonVeto", "AllHadronicVeto", "JetLepton2DCut", "BJet", "Jet", "MET", "Lepton"],
+        "default": ["lepton", "jet"],
     }
     base_steps_labels = {
+        "lepton": "1 lepton",
+        "jet": r"$\geq$ 2 jets",
+        # labels for the target steps above
         "JetLepton2DCut": "2D cut",
         "AllHadronicVeto": r"all-hadr. veto",
         "DileptonVeto": r"dilep. veto",
