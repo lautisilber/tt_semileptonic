@@ -99,17 +99,23 @@ def create_new_config(
 
     colors = {
         "data": "#000000",  # black
-        "tt_sl": "#E02E21", # dark red
-        "tt_dl": "#E07721", # orange
-        "tt_fh": "#E0B721", # yellow
+        "tt_sl": "#E02E21",  # dark red
+        "tt_dl": "#E07721",  # orange
+        "tt_fh": "#E0B721",  # yellow
         "qcd": "#5E8FFC",  # blue
         "w_lnu": "#82FF28",  # green
         "higgs": "#984ea3",  # purple
         "st": "#3E00FB",  # dark purple
-        "dy": "#FBFF36",  # yellow
+        "dy": "#00B8A9",  # teal
         "vv": "#B900FC",  # pink
         "other": "#999999",  # grey
     }
+
+    # apply the colours to the process instances registered above (plotting reads
+    # process_inst.color1 for the fill and color2 for the edge)
+    for proc in cfg.processes:
+        proc.color1 = colors.get(proc.name, "#aaaaaa")
+        proc.color2 = colors.get(proc.name, "#000000")
 
     # verify that the root processes of each dataset (or one of their
     # ancestor processes) are registered in the config

@@ -5,6 +5,156 @@ commit's worth of work.
 
 ---
 
+## Split lepton definition into a producer; move lepton_selection to its own file
+
+The lepton logic that used to be inline in `selection/default.py` is now split:
+
+- **`tt_semileptonic/production/lepton.py::lepton_definition`** (`@producer`, next to
+  `lepton_producer`) is the single source of truth for "what is a selected lepton". It
+  produces three columns:
+  - `Muon.pass_lepton` / `Electron.pass_lepton` — per-object boolean masks (the
+    primitive: *which* leptons are good); transient, not kept past `ReduceEvents`.
+  - `channel_id` — per-event `int8` label (1 = e, 2 = µ, 0 = neither) derived from those
+    masks; kept, because `lepton_producer` and the `cat_1e` / `cat_1m` categorizers
+    (which run after `ReduceEvents`) key on it. Redundant with the masks but materialized
+    once here on purpose — see the docstring.
+  - kinematic cuts live in the module-level `_muon_mask()` / `_electron_mask()` helpers.
+- **`tt_semileptonic/selection/leptons.py::lepton_selection`** (moved out of
+  `default.py`) is now a thin consumer: calls `self[lepton_definition]`, then builds the
+  `"lepton"` step (`channel_id != 0`), the Muon/Electron object index lists, and the
+  `n_muon` / `n_electron` aux from the `pass_lepton` masks.
+- `selection/default.py` imports `lepton_selection` from `selection/leptons.py` and
+  `jet_selection` from `selection/jets.py` (the latter fixing a `NameError` — it was
+  referenced but never imported after the jets split).
+
+Behaviour is unchanged; needs a `cf.SelectEvents` run to confirm end to end.
+
+---
+
+## Nuanced, config-driven lepton selection (pt regimes + veto)
+
+`lepton_definition` now implements the m(ttbar)-style lepton definition from the
+(previously unused) `cfg.x.lepton_selection.{mu,e}` params, instead of a flat
+`pt > 30/35` cut:
+
+- **pt regimes**: low-pt (`tightId` + `pfIsoId >= 4` for muons, `mvaIso_WP80` for
+  electrons) vs high-pt (`highPtId == 2` / `mvaNoIso_WP80`), plus the electron
+  supercluster-eta cut and barrel-endcap gap veto. New per-event `pt_regime` column
+  (0 / 1 / 2).
+- **extra-lepton veto**: `Muon.pass_veto_lepton` / `Electron.pass_veto_lepton` from the
+  looser `*_addveto` params; `lepton_selection` exposes `VetoMuon` / `VetoElectron`
+  object collections and a `dilepton_veto` step (≤ 1 lepton total).
+- mask logic lives in `_muon_masks()` / `_electron_masks()` helpers; a
+  `@lepton_definition.init` declares the config-dependent NanoAOD columns.
+- verified the 7 ID/iso branches exist in the 2024 nano v15 files.
+
+Not done yet: triggers, 2D lepton-jet isolation, MET selection.
+
+Selector steps are now `lepton, dilepton_veto, jet` — `selector_step_groups["default"]`
+in `defaults_and_groups_helper.py` updated to match (a mismatch crashes cutflow tasks).
+
+---
+
+## MET filters + m(ttbar)-style AK4 jet selection
+
+- `selection/default.py`: run `columnflow.selection.cms.met_filters` (config already has
+  `cfg.x.met_filters`) → step `METFilters`.
+- `selection/jets.py::jet_selection` ported from `mtt/selection/jets.py`, config-driven
+  from `cfg.x.jet_selection.ak4`:
+  - baseline jets `pt > 30`, `|eta| < 2.5`; `LooseJet` (`pt > 0.1`) collection.
+  - `jet` step: ≥ 2 baseline jets with **channel-dependent** leading/subleading pt
+    (e: 50/40, µ: 50/50).
+  - `bjet` step: ≥ 1 b jet (UParT AK4 medium WP, 0.1272); `BJet` / `LightJet`
+    collections.
+  - `@jet_selection.init` declares the config-named b-tagger branch, plus the full
+    `pt/eta/phi/mass` — events are read with NanoAOD vector behavior, so `events.Jet.pt`
+    only works when the whole Lorentz vector is present (same for Muon/Electron in
+    `lepton_definition`).
+  - runs **after** `lepton_selection` (leading-jet pt cut needs `channel_id`).
+  - **jet ID not applied yet** — `Jet.jetId` is absent from 2024 nano v15 and needs
+    `columnflow.production.cms.jet.jet_id` + the JME correction file, which is deferred
+    with the rest of the corrections infrastructure.
+- Selector steps now `METFilters, jet, bjet, lepton, dilepton_veto`;
+  `selector_step_groups["default"]` + labels updated to match.
+
+---
+
+## MET selection
+
+`selection/met.py::met_selection` (own file — MET is not a jet), ported from
+`mtt/selection/jets.py::met_selection`, config-driven from `cfg.x.met_selection`:
+channel-dependent `PuppiMET.pt` cut (> 60 GeV e / > 70 GeV mu) -> step `met`. Runs after
+the lepton selection (`channel_id`). `@met_selection.init` requests `PuppiMET.{pt,phi}`
+(pt alone fails the NanoAOD vector check).
+
+Selector steps: `METFilters, lepton, dilepton_veto, jet, bjet, met`.
+
+---
+
+## Jet-lepton cleaning + lepton-jet 2D cut
+
+**Bug found:** NanoAOD's anti-kt clustering turns an isolated lepton into its own PF
+jet, so `jet_selection` was counting the selected lepton as a jet (≈100% of
+single-lepton events; verified `min ΔR(lepton, jet) ≈ 0.01`). mttbar removes these in a
+`jet_lepton_cleaner` calibrator we haven't ported.
+
+- `production/lepton.py`: `selected_lepton_jet_mask()` helper — per-jet bool, `True` when
+  the jet is the selected lepton, via `Jet.{muon,electron}Idx1/2` matched to the
+  `pass_lepton` index. `lepton_jet_match_columns` names the NanoAOD branches it needs.
+- `selection/jets.py`: exclude `selected_lepton_jet_mask` from `loose`/`baseline`/`b`/
+  `light` jet collections. Fixes the jet count; **efficiency changes again**.
+- `selection/lepton_jet_2d.py` (new): `lepton_jet_2d_selection`, ported from
+  `mtt/selection/jets.py`. `ΔR(lepton, closest pt>15 jet) > 0.4` OR
+  `pt_rel > 25 GeV`, applied only for `pt_regime == 2` (high-pt leptons, no isolation in
+  their ID). Reads `cfg.x.lepton_jet_iso`. Step `lepton_jet_2d`. Uses the NanoAOD vector
+  behavior directly (`metric_table` / `to_Vector3D`) — no `attach_coffea_behavior` call.
+- Selector steps now `METFilters, lepton, dilepton_veto, jet, bjet, met, lepton_jet_2d`.
+
+Verified on real events: without cleaning the 2D cut rejects ~100%; with cleaning
+`min ΔR` → ~1.3 and the cut behaves sensibly.
+
+`selected_lepton_jet_mask` de-options the per-event lepton index (`fill_none(..., -1)` +
+`has_mu`/`has_e` guards) before broadcasting against the jagged `Jet` array — otherwise
+the whole jet list became nullable (`N * option[var * bool]`), which propagated to the
+`bjet` step and made `results.event` `?bool` (→ `SelectionResult event mask must be of
+type N * bool`).
+
+---
+
+## Apply per-process plot colours + `mc_no_qcd` group
+
+- `config_helper.py`: the `colors` dict was defined but never assigned — added the loop
+  that sets `process_inst.color1` / `color2` (plotting reads these). `dy` recoloured from
+  yellow to teal so it no longer clashes with `tt_fh`. `dy` / `w_lnu` / `vv` were sharing
+  a colour before. `--process-settings` can't set colours (only scale/unstack/label), so
+  the config is the only place.
+- `defaults_and_groups_helper.py`: `mc_no_qcd` dataset group (21) + process group (7),
+  = `mc` minus QCD.
+
+---
+
+## AK8 top tagging + all-hadronic veto
+
+`selection/fatjets.py::top_tagged_jets` (new file), ported from
+`mtt/selection/jets.py::top_tagged_jets`, config-driven from `cfg.x.jet_selection.ak8`:
+
+- top-vs-QCD score from the GloParT-v3 categories
+  `(TopbWqq + TopbWq) / (TopbWqq + TopbWq + QCD)`, working point 0.821; guarded 0/0.
+- top-tagged AK8 jet = `pt > 400`, `|eta| < 2.5`, softdrop mass in `[105, 210]`, score
+  above WP.
+- **`all_had_veto`** step: reject events with ≥ 2 top-tagged AK8 jets (verified:
+  ~0.03% of events). Object collections `FatJet` / `FatJetTopTag` /
+  `FatJetTopTagDeltaRLepton`, and `n_toptag` / `n_toptag_delta_r_lepton` aux.
+- runs after `lepton_producer` (reads the `Lepton` column for the ΔR-to-lepton cut).
+- tight fat-jet ID not applied (`FatJet.jetId` absent from nano v15, needs the JME
+  file — same as AK4).
+- removed the dead `fatjet_selection` stub from `selection/jets.py`.
+
+Selector steps: `METFilters, lepton, dilepton_veto, jet, bjet, met, lepton_jet_2d,
+all_had_veto`.
+
+---
+
 ## Work around columnflow cf.PlotCutflow regression (PR #783)
 
 columnflow PR #783 replaced `h[{"category": sum, self.variable: sum}]` in

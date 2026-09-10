@@ -9,9 +9,10 @@ This file is written from the real code. The previous version was auto-generated
 hallucinated large parts of the columnflow API — if something here disagrees with the
 code, trust the code and fix this file.
 
-Companion docs: [CHANGES.md](CHANGES.md) (running change log) and
-[ISSUES.md](ISSUES.md) (framework bugs we hit and worked around — the XRootD exit
-hang and the `cf.PlotCutflow` regression).
+Companion docs: [SELECTION.md](SELECTION.md) (every selection step in detail + the
+difficulties overcome), [CHANGES.md](CHANGES.md) (running change log), and
+[ISSUES.md](ISSUES.md) (framework bugs we hit and worked around — the XRootD exit hang
+and the `cf.PlotCutflow` regression).
 
 ---
 
@@ -93,12 +94,27 @@ custom decorator layer.
 
 ## Framework gotchas
 
-- **`channel_id` is not a NanoAOD column.** It is produced by the selector
-  (1 = e channel, 2 = mu channel, 0 = neither), then written with
-  `set_ak_column(events, "channel_id", ...)`. `lepton_producer`, `cat_1e`, `cat_1m`
-  all `uses={"channel_id"}` and will raise `did not receive any columns matching:
-  channel_id` if no lepton-selection step ran first. Reference impl:
-  `../mttbar/mtt/selection/lepton.py`.
+- **Lepton selection** lives in `production/lepton.py::lepton_definition` (config-driven
+  from `cfg.x.lepton_selection.{mu,e}`: pt regimes, IDs, isolation, barrel veto,
+  extra-lepton veto) called from `selection/leptons.py::lepton_selection` (steps
+  `lepton` + `dilepton_veto`, `VetoMuon`/`VetoElectron` object collections). It writes
+  the transient `Muon/Electron.pass_lepton` + `pass_veto_lepton` masks and the kept
+  `channel_id` (per-event int8: 1 = e, 2 = mu, 0 = neither) and `pt_regime` (0/1/2).
+  `channel_id` is **not** a NanoAOD column — `lepton_producer`, `cat_1e`, `cat_1m`
+  `uses={"channel_id"}` and raise `did not receive any columns matching: channel_id` if
+  the lepton selection did not run first. Reference: `../mttbar/mtt/selection/lepton.py`
+  (still to port: triggers, 2D lepton-jet isolation, MET).
+- **De-option per-event scalars before broadcasting against a jagged array.** A
+  `N * ?int` (e.g. `ak.firsts(...)`) compared against `N * var * int` (a jet column)
+  makes the *whole list* nullable — `N * option[var * bool]` — which survives
+  `ak.fill_none(x, False)` and eventually turns a selection step into `?bool`
+  (`SelectionResult event mask must be of type N * bool`). Fix: `ak.fill_none` the
+  scalar to a sentinel first (see `selected_lepton_jet_mask`).
+- **Physics-object collections need the full `{pt,eta,phi,mass}` in `uses`.** Events
+  are read with NanoAOD (`vector`) behavior, so `events.Jet.pt` / `events.Muon.pt`
+  raises `array does not have azimuthal coordinates` if only a subset (e.g. `pt`,`eta`)
+  was requested. Always `uses={"Jet.{pt,eta,phi,mass}", ...}` even when you only cut on
+  pt/eta.
 - **`category_ids` runs a categorizer for *every leaf category*** (see
   `columnflow/production/categories.py::category_ids_init`), not just the ones you ask
   for on the CLI. Adding a category whose `@categorizer` reads a column that isn't
@@ -121,7 +137,7 @@ custom decorator layer.
 |---|---|
 | `cf.GetDatasetLFNs` | ✅ works |
 | `cf.CalibrateEvents` (`--calibrator default`) | ✅ works |
-| `cf.SelectEvents` (`--selector default`) | ✅ works **on MC** — `--datasets mc` (29) all run, `--branch 0`, ~42% efficiency (≥2 jets AND exactly one e or µ). `lepton_selection` produces `channel_id`; `category_ids` does channel categories only |
+| `cf.SelectEvents` (`--selector default`) | ✅ runs on MC. Steps: `METFilters`, `lepton` (pt-regime IDs + iso), `dilepton_veto`, `jet` (≥2 AK4, channel-dep. pt), `bjet` (≥1 UParT-medium), `met` (channel-dep. PuppiMET), `lepton_jet_2d` (high-pt only), `all_had_veto` (<2 GloParT top-tagged AK8). Sub-selectors in `selection/{leptons,jets,met,lepton_jet_2d,fatjets}.py`; lepton defs + `channel_id`/`pt_regime` + `selected_lepton_jet_mask` from `production/lepton.py`. Jets lepton-cleaned via `Jet.{muon,electron}Idx1/2`. Not yet: jet/fatjet ID (need JME file), triggers. Re-check efficiency after each addition |
 | `cf.SelectEvents` on **data** | ❌ fails (14 `data_*` datasets), not yet diagnosed. Selector applies no golden-JSON / MET-filter cuts on data. `columnflow.production.cms.seeds` "optional route not found" warnings on data are harmless (MC-only seed inputs). |
 | `cf.ReduceEvents` | ⏭️ next |
 | beyond | ⛔ not started |

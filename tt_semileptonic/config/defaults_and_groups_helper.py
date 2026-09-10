@@ -87,6 +87,7 @@ def set_process_groups(
     })
 
     base_processes.default = base_processes.bkg + base_processes.sig
+    base_processes.mc_no_qcd = [p for p in base_processes.default if p != "qcd"]
     overrides = {
         # set custom process groups for specific runs and tags if needed
         (3, "2022preEE"): DotDict.wrap({
@@ -128,6 +129,12 @@ def set_dataset_groups(
         "mc": [
             "tt_*",
             "st_*", "w_lnu_*", "dy_*", "qcd_*",
+            "ww_*", "wz_*", "zz_*",
+        ],
+        # "mc" minus QCD (QCD multijet is slow and often not needed for quick checks)
+        "mc_no_qcd": [
+            "tt_*",
+            "st_*", "w_lnu_*", "dy_*",
             "ww_*", "wz_*", "zz_*",
         ],
         # everything that is neither the tt_sl signal nor data
@@ -349,15 +356,24 @@ def set_selector_steps(
     # Target configuration (re-enable step by step as the selector grows): these are
     # the selector step names the full m(ttbar)-style selection is meant to produce.
     # cf.CreateCutflowHistograms / cf.PlotCutflow raise on any step not present in the
-    # SelectionResult (missing_selector_step_strategy = raise in law.cfg), and right now
-    # tt_semileptonic/selection/default.py only produces "jet" and "lepton".
+    # SelectionResult (missing_selector_step_strategy = raise in law.cfg); these must
+    # match what tt_semileptonic/selection/{leptons,jets}.py actually put in `steps`.
     # "default": ["METFilters", "DileptonVeto", "AllHadronicVeto", "JetLepton2DCut", "BJet", "Jet", "MET", "Lepton"],
     base_steps = {
-        "default": ["lepton", "jet"],
+        "default": [
+            "METFilters", "lepton", "dilepton_veto", "jet", "bjet", "met",
+            "lepton_jet_2d", "all_had_veto",
+        ],
     }
     base_steps_labels = {
+        "METFilters": "MET filters",
         "lepton": "1 lepton",
+        "dilepton_veto": r"dilep. veto",
         "jet": r"$\geq$ 2 jets",
+        "bjet": r"$\geq$ 1 b jet",
+        "met": "MET",
+        "lepton_jet_2d": "2D cut",
+        "all_had_veto": r"all-hadr. veto",
         # labels for the target steps above
         "JetLepton2DCut": "2D cut",
         "AllHadronicVeto": r"all-hadr. veto",
