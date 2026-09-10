@@ -61,12 +61,15 @@ def set_process_groups(
     tag = config.x.cpn_tag
 
     base_processes = DotDict.wrap({
+        "data": [
+            "data",
+        ],
         "bkg": [
             "dy",
             "w_lnu",
             "vv",
             "tt_dl",
-            "tt_hl",
+            "tt_fh",
             "st",
             "qcd",
         ],
@@ -103,7 +106,7 @@ def set_dataset_groups(
     base_datasets = DotDict.wrap({
         "all": ["*"],
         "data": [
-            "data_mu_*", "data_egamma_*",
+            "data_mu_*", "data_e_*",
         ],
         "tt": ["tt_*"],
         "st": ["st_*"],
@@ -112,11 +115,20 @@ def set_dataset_groups(
         "w_lnu": ["w_lnu_*"],
         "qcd": ["qcd_*"],
         "vv": ["ww_*", "wz_*", "zz_*"],
-        "bkg": [
-            "tt_dl", "tt_hl", "st_*", "w_lnu_*", "dy_*",
-            "qcd_*"
+        # all simulation (signal + bkg), i.e. "all" minus data
+        # (dataset groups can only add patterns, not subtract, so this is spelled out)
+        "mc": [
+            "tt_*",
+            "st_*", "w_lnu_*", "dy_*", "qcd_*",
+            "ww_*", "wz_*", "zz_*",
         ],
-        "signal": ["tt_sl"]
+        # everything that is neither the tt_sl signal nor data
+        "bkg": [
+            "tt_dl_powheg", "tt_fh_powheg",
+            "st_*", "w_lnu_*", "dy_*", "qcd_*",
+            "ww_*", "wz_*", "zz_*",
+        ],
+        "signal": ["tt_sl_powheg"],
     })
 
     overrides = {

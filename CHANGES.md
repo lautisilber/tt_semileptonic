@@ -5,6 +5,48 @@ commit's worth of work.
 
 ---
 
+## Fix dataset and process groups for the 2024 dataset names
+
+`defaults_and_groups_helper.py`: the `data`, `bkg` and `signal` dataset groups (and the
+`bkg` process group) were ported from mttbar and referenced names that do not exist in
+the 2024 cmsdb campaign, so they resolved to the wrong set or to nothing.
+
+- `config.x.dataset_groups`:
+  - `data`: `data_egamma_*` → `data_e_*` (was matching only the 7 muon datasets)
+  - `bkg`: `tt_dl`/`tt_hl` → `tt_dl_powheg`/`tt_fh_powheg`, and add the diboson
+    patterns `ww_*`/`wz_*`/`zz_*` which were missing entirely (23 → 28 datasets)
+  - `signal`: `tt_sl` → `tt_sl_powheg` (was resolving to 0 datasets)
+  - new `mc` group: all simulation, i.e. `all` (43) minus `data` (14) = 29 datasets
+    (= `signal` + `bkg`). Spelled out as patterns because groups can only add.
+- `config.x.process_groups`:
+  - `bkg`: `tt_hl` → `tt_fh` (no `tt_hl` process exists)
+  - add a `data` group (`["data"]`)
+
+The other dataset groups (`tt`, `st`, `w`, `w_lnu`, `dy`, `qcd`, `vv`, `all`) were
+already correct.
+
+Usage: run `cf.SelectEvents` over all backgrounds with
+
+```bash
+law run cf.SelectEventsWrapper --datasets bkg --branch 0 \
+    --version test --calibrators default --selector default --workers 4
+```
+
+### Status by dataset group (cf.SelectEvents, `--branch 0`, small config)
+
+| group | result |
+|---|---|
+| `signal` (`tt_sl_powheg`) | ✅ works |
+| `bkg` (28 MC) | ✅ all run |
+| `data` (14) | ❌ **does not work yet** — not yet diagnosed. The selector also
+  applies no golden-JSON / MET-filter selection on data. The
+  `columnflow.production.cms.seeds` warnings seen during the data run
+  (`optional route 'Pileup.nPU' / 'GenJet.pt' / 'GenPart.pt' not found`) are
+  **harmless** — `deterministic_seeds` just drops those MC-only inputs and seeds
+  from run/lumi/event; not the cause of the failure. |
+
+---
+
 ## cf.SelectEvents working: lepton selection, channel_id, XRootD hang fix
 
 Got `cf.SelectEvents` to run end-to-end (both branches of the `small` config,

@@ -117,9 +117,14 @@ custom decorator layer.
 |---|---|
 | `cf.GetDatasetLFNs` | ✅ works |
 | `cf.CalibrateEvents` (`--calibrator default`) | ✅ works |
-| `cf.SelectEvents` (`--selector default`) | ✅ works — clean end-to-end run, both branches, ~42% selection efficiency (≥2 jets AND exactly one e or µ). `lepton_selection` produces `channel_id`; `category_ids` does channel categories only |
+| `cf.SelectEvents` (`--selector default`) | ✅ works **on MC** — `--datasets mc` (29) all run, `--branch 0`, ~42% efficiency (≥2 jets AND exactly one e or µ). `lepton_selection` produces `channel_id`; `category_ids` does channel categories only |
+| `cf.SelectEvents` on **data** | ❌ fails (14 `data_*` datasets), not yet diagnosed. Selector applies no golden-JSON / MET-filter cuts on data. `columnflow.production.cms.seeds` "optional route not found" warnings on data are harmless (MC-only seed inputs). |
 | `cf.ReduceEvents` | ⏭️ next |
 | beyond | ⛔ not started |
+
+Dataset groups (fixed for the 2024 names): `all` (43), `mc` (29), `bkg` (28),
+`signal` (1 = `tt_sl_powheg`), `data` (14), plus `tt`/`st`/`w`/`dy`/`qcd`/`vv`. Run a
+group with `law run cf.SelectEventsWrapper --datasets <group> --branch 0 …`.
 
 ### Known config inconsistencies (not yet cleaned up)
 
