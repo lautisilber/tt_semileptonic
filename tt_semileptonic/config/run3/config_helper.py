@@ -19,6 +19,7 @@ import tt_semileptonic.config.categories_helper as categories_helper
 import tt_semileptonic.config.variables_helper as variables_helper
 import tt_semileptonic.config.taggers_helper as taggers_helper
 import tt_semileptonic.config.corrections_helper as corrections_helper
+import tt_semileptonic.config.selection_params as selection_params
 
 thisdir = os.path.dirname(os.path.abspath(__file__))
 
@@ -125,111 +126,86 @@ def create_new_config(
     cfg.x.toptag_wp = taggers_helper.toptag_params(cfg)
 
     # lepton selection parameters
-    cfg.x.lepton_selection = DotDict.wrap({
-        "mu": {
-            "column": "Muon",
-            "min_pt": {
-                "low_pt": 30,
-                "high_pt": 55,
-            },
-            "max_abseta": 2.4,
-            "iso": {
-                "column": "pfIsoId",
-                "min_value": 4,  # 1 = PFIsoVeryLoose, 2 = PFIsoLoose, 3 = PFIsoMedium, 4 = PFIsoTight, 5 = PFIsoVeryTight, 6 = PFIsoVeryVeryTight  # noqa
-            },
-            "id": {
-                "low_pt": {
-                    "column": "tightId",
-                    "value": True,
-                },
-                "high_pt": {
-                    "column": "highPtId",
-                    "value": 2,  # 2 = global high pT, which includes tracker high pT
-                },
-            },
+    cfg.x.lepton_selection = selection_params.LeptonSelectionConfig(
+        mu=selection_params.MuonSelectionConfig(
+            column="Muon",
+            min_pt=selection_params.PtRegimeConfig(low_pt=30, high_pt=55),
+            max_abseta=2.4,
+            iso=selection_params.MuonIsoConfig(
+                column="pfIsoId",
+                min_value=4,  # 1 = PFIsoVeryLoose, 2 = PFIsoLoose, 3 = PFIsoMedium, 4 = PFIsoTight, 5 = PFIsoVeryTight, 6 = PFIsoVeryVeryTight  # noqa
+            ),
+            id=selection_params.MuonIdRegimeConfig(
+                low_pt=selection_params.MuonIdConfig(column="tightId", value=True),
+                high_pt=selection_params.MuonIdConfig(
+                    column="highPtId",
+                    value=2,  # 2 = global high pT, which includes tracker high pT
+                ),
+            ),
             # veto events with additional leptons passing looser cuts
-            "min_pt_addveto": 25,
-            "id_addveto": {
-                "column": "tightId",
-                "value": True,
-            },
-            "max_abseta_addveto": 2.4,
-        },
-        "e": {
-            "column": "Electron",
-            "min_pt": {
-                "low_pt": 35,
-                "high_pt": 120,
-            },
-            "max_abseta": 2.5,
-            "barrel_veto": [1.44, 1.57],
-            "mva_id": {
-                "low_pt": "mvaIso_WP80",
-                "high_pt": "mvaNoIso_WP80",
-            },
+            min_pt_addveto=25,
+            id_addveto=selection_params.MuonIdConfig(column="tightId", value=True),
+            max_abseta_addveto=2.4,
+        ),
+        e=selection_params.ElectronSelectionConfig(
+            column="Electron",
+            min_pt=selection_params.PtRegimeConfig(low_pt=35, high_pt=120),
+            max_abseta=2.5,
+            barrel_veto=(1.44, 1.57),
+            mva_id=selection_params.ElectronMvaIdConfig(low_pt="mvaIso_WP80", high_pt="mvaNoIso_WP80"),
             # veto events with additional leptons passing looser cuts
-            "min_pt_addveto": 25,
-            "id_addveto": {
-                "column": "cutBased",
-                "min_value": 3,  # 0 = fail, 1 = veto, 2 = loose, 3 = medium, 4 = tight
-            },
-            "max_abseta_addveto": 2.5,
-        },
-    })
+            min_pt_addveto=25,
+            id_addveto=selection_params.ElectronVetoIdConfig(
+                column="cutBased",
+                min_value=3,  # 0 = fail, 1 = veto, 2 = loose, 3 = medium, 4 = tight
+            ),
+            max_abseta_addveto=2.5,
+        ),
+    )
 
     # jet selection parameters
-    cfg.x.jet_selection = DotDict.wrap({
-        "ak4": {
-            "column": "Jet",
-            "max_abseta": 2.5,
-            "min_pt": {
-                "baseline": 30,
-                "e": [50, 40],
-                "mu": [50, 50],
-            },
-            "btagger": {
-                "column": "btagDeepFlavB" if year != 2024 else "btagUParTAK4B",
-                # "column": "btagDeepFlavB" if year != 2024 else "btagPNetB",
-                "wp": cfg.x.btag_wp.deepjet.medium if year != 2024 else cfg.x.btag_wp.UParTAK4.medium,
-                # "wp": config.x.btag_wp.deepjet.medium if year != 2024 else config.x.btag_wp.particle_net.medium,
-            },
-        },
-        "ak8": {
-            "column": "FatJet",
-            "max_abseta": 2.5,
-            "min_pt": {
-                "baseline": 200,
-                "toptagged": 400,
-            },
-            "msoftdrop": [105, 210],
-            "toptagger": {
-                "column": ["particleNetWithMass_TvsQCD"] if year != 2024 else [
+    cfg.x.jet_selection = selection_params.JetSelectionConfig(
+        ak4=selection_params.Ak4JetSelectionConfig(
+            column="Jet",
+            max_abseta=2.5,
+            min_pt=selection_params.Ak4MinPtConfig(baseline=30, e=(50, 40), mu=(50, 50)),
+            btagger=selection_params.BTaggerConfig(
+                column="btagDeepFlavB" if year != 2024 else "btagUParTAK4B",
+                # column="btagDeepFlavB" if year != 2024 else "btagPNetB",
+                wp=cfg.x.btag_wp.deepjet.medium if year != 2024 else cfg.x.btag_wp.UParTAK4.medium,
+                # wp=config.x.btag_wp.deepjet.medium if year != 2024 else config.x.btag_wp.particle_net.medium,
+            ),
+        ),
+        ak8=selection_params.Ak8JetSelectionConfig(
+            column="FatJet",
+            max_abseta=2.5,
+            min_pt=selection_params.Ak8MinPtConfig(baseline=200, toptagged=400),
+            msoftdrop=(105, 210),
+            toptagger=selection_params.TopTaggerConfig(
+                column=("particleNetWithMass_TvsQCD",) if year != 2024 else (
                     "globalParT3_TopbWqq",
                     "globalParT3_TopbWq",
                     "globalParT3_QCD",
-                ],
-                "wp": cfg.x.toptag_wp.particle_net.tight if year != 2024 else cfg.x.toptag_wp.GloParTv3.tight,
-            },
-            "delta_r_lep": 0.8,
-        },
-    })
+                ),
+                wp=cfg.x.toptag_wp.particle_net.tight if year != 2024 else cfg.x.toptag_wp.GloParTv3.tight,
+            ),
+            delta_r_lep=0.8,
+        ),
+    )
 
     # MET selection parameters
-    cfg.x.met_selection = DotDict.wrap({
-        "column": "PuppiMET",
-        "raw_column": "RawPuppiMET",
-        "min_pt": {
-            "e": 60,
-            "mu": 70,
-        },
-    })
+    cfg.x.met_selection = selection_params.METSelectionConfig(
+        column="PuppiMET",
+        raw_column="RawPuppiMET",
+        min_pt=selection_params.METMinPtConfig(e=60, mu=70),
+    )
 
     # lepton jet 2D isolation parameters
-    cfg.x.lepton_jet_iso = DotDict.wrap({
-        "min_pt": 15,
-        "min_delta_r": 0.4,
-        "min_pt_rel": 25,
-    })
+    cfg.x.lepton_jet_iso = selection_params.LeptonJetIsoConfig(
+        min_pt=15,
+        min_delta_r=0.4,
+        min_pt_rel=25,
+    )
 
     # MET filters
     # https://twiki.cern.ch/twiki/bin/viewauth/CMS/MissingETOptionalFiltersRun2#Run_3_recommendations
