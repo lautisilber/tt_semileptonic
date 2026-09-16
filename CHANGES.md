@@ -35,7 +35,10 @@ both fixed:
   the final copy right before it decays into different daughter particles -- the
   momentum `top_pt_weight`'s reweighting recipe is defined against.
 
-Not yet re-run to confirm both fixes together.
+Verified: both fixes confirmed on `tt_sl_powheg` (single branch), then
+`cf.ProduceColumnsWrapper --datasets mc` ran clean across the full 29-dataset `mc` group
+-- including `normalization_weights`, confirming all 29 datasets have populated `cmsdb`
+cross sections at 13.6 TeV (`CORRECTIONS_QUESTIONS.md` #13, previously open).
 
 ---
 
