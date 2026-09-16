@@ -5,6 +5,33 @@ commit's worth of work.
 
 ---
 
+## cutflow_features selector + re-enable 0t/1t categories
+
+Ported `mtt/selection/cutflow_features.py`: writes per-step object kinematics/counts
+(leading 4 jet/fatjet pt+eta, leading lepton pt+eta, n_jet/n_bjet/n_lightjet/n_toptag/
+n_toptag_delta_r_lepton/n_muon/n_electron, `LHE.HT` for non-diboson MC) as `cutflow.*`
+columns, for `cf.PlotCutflowVariables`. Straight port, no adaptation needed -- its
+`results.objects.*` references (`Jet.BJet`/`LightJet`, `FatJet.FatJetTopTag`/
+`FatJetTopTagDeltaRLepton`, `Muon.Muon`, `Electron.Electron`) already match our own
+selectors' object dicts exactly.
+
+- **New `tt_semileptonic/selection/cutflow_features.py`**.
+- **`selection/default.py`**: added to `uses`/`produces` (writes real `cutflow.*`
+  columns), called right after `qcd_spikes`, before `category_ids` -- needs
+  `results.objects` from every selector above it, matching mttbar's placement.
+- **`config/categories_helper.py`**: re-enabled `cat_0t`/`cat_1t` and the `n_top_tags`
+  `CategoryGroup` in `add_categories_selection` -- previously disabled because their
+  categorizers read `cutflow.n_toptag_delta_r_lepton`, which now exists.
+- **`config/defaults_and_groups_helper.py`**: `default_categories` (`base_defaults` in
+  `set_defaults`) updated from the temporary `["incl", "1e", "1m"]` to the originally
+  intended `["incl", "1e", "1m", "1e__0t", "1m__0t", "1e__1t", "1m__1t"]`, per that
+  block's own "re-enable once top-tagging exists" comment -- the exact condition it
+  named is now satisfied.
+
+Not yet run to confirm.
+
+---
+
 ## JEC/JER calibration + jet-lepton 4-vector cleaning
 
 `calibration/default.py` previously only ran `mc_weight` + `deterministic_seeds` -- every

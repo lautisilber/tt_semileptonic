@@ -95,32 +95,29 @@ def add_categories_selection(config: od.Config) -> None:
 
     # number of top tags
     #
-    # Disabled for now: `category_ids` (run in cf.SelectEvents) registers a categorizer
-    # for every leaf category, so as soon as "0t"/"1t" exist, the leaf categories
-    # "1e__0t", "1m__1t", ... force `cat_0t` / `cat_1t` to run on every chunk. Those
-    # categorizers read `cutflow.n_toptag_delta_r_lepton`, a column that is only created
-    # by a top-tagging selection step which is not implemented yet -> SelectEvents fails.
-    # Re-enable this block (and the "n_top_tags" group below) once top-tagging exists.
+    # `category_ids` (run in cf.SelectEvents) registers a categorizer for every leaf
+    # category, so as soon as "0t"/"1t" exist, the leaf categories "1e__0t", "1m__1t", ...
+    # force `cat_0t` / `cat_1t` to run on every chunk. Those categorizers read
+    # `cutflow.n_toptag_delta_r_lepton`, which `selection/cutflow_features.py` now produces.
     #
-    # config.add_category( # Resolved
-    #     name="0t",
-    #     id=10,
-    #     selection="cat_0t",
-    #     label=r"0t",
-    # )
-    # config.add_category( # Boosted
-    #     name="1t",
-    #     id=20,
-    #     selection="cat_1t",
-    #     label=r"1t",
-    # )
+    config.add_category( # Resolved
+        name="0t",
+        id=10,
+        selection="cat_0t",
+        label=r"0t",
+    )
+    config.add_category( # Boosted
+        name="1t",
+        id=20,
+        selection="cat_1t",
+        label=r"1t",
+    )
 
     # -- combined categories
 
     category_groups = {
         "lepton": CategoryGroup(["1e", "1m"], is_complete=True, has_overlap=False),
-        # re-enable together with the "0t"/"1t" categories above (see note)
-        # "n_top_tags": CategoryGroup(["0t", "1t"], is_complete=False, has_overlap=False),
+        "n_top_tags": CategoryGroup(["0t", "1t"], is_complete=False, has_overlap=False),
     }
 
     create_category_combinations(config, category_groups, _name_fn, kwargs_fn=_kwargs_fn, parent_mode="safe")

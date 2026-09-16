@@ -30,16 +30,10 @@ def set_defaults(
         "hist_producer": "all_weights",
         "ml_model": None,
         "inference_model": "an_v12_simplified__m7000_w70",
-        # Target configuration (re-enable once top-tagging exists): the 0t/1t
-        # categories are commented out in config/categories_helper.py because their
-        # categorizers read cutflow.n_toptag_delta_r_lepton, which is not produced
-        # yet, so 1m__0t / 1e__1t / ... do not exist as categories and every task
-        # that falls back to this default (plotting, cutflow, ...) would crash.
-        # "categories": [
-        #     "1m", "1e", "1m__0t", "1e__0t", "1m__1t", "1e__1t",
-        # ],
+        # 0t/1t categories are now registered (categories_helper.py::add_categories_selection)
+        # and cutflow.n_toptag_delta_r_lepton is produced (selection/cutflow_features.py)
         "categories": [
-            "incl", "1e", "1m",
+            "incl", "1e", "1m", "1e__0t", "1m__0t", "1e__1t", "1m__1t",
         ],
         "variables": [
             "electron_pt", "muon_pt",

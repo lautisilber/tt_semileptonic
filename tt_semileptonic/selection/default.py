@@ -28,6 +28,7 @@ from tt_semileptonic.selection.met import met_selection
 from tt_semileptonic.selection.lepton_jet_2d import lepton_jet_2d_selection
 from tt_semileptonic.selection.fatjets import top_tagged_jets
 from tt_semileptonic.selection.qcd_spikes import qcd_spikes
+from tt_semileptonic.selection.cutflow_features import cutflow_features
 from tt_semileptonic.production.lepton import lepton_producer
 
 # Order of selection is:
@@ -43,6 +44,8 @@ from tt_semileptonic.production.lepton import lepton_producer
 # - AK8 top tagging / all-hadronic veto -> step "all_had_veto"
 # - jet veto map (data + MC)         -> step "jet_veto_map"
 # - QCD spikes (QCD MC only)         -> step "QCDSpikes"
+# - cutflow_features writes cutflow.* columns for cf.PlotCutflowVariables (also unblocks
+#   the cat_0t/cat_1t categorizers, which read cutflow.n_toptag_delta_r_lepton)
 # (everything after the lepton selection is channel-dependent, so it runs after it)
 
 
@@ -113,7 +116,7 @@ def custom_increment_stats(
     # e.g., if we want to use some internal Selector, make
     # sure that you have all the relevant information
     uses={
-        met_filters, json_filter, jet_veto_map, qcd_spikes,
+        met_filters, json_filter, jet_veto_map, qcd_spikes, cutflow_features,
         mc_weight, jet_selection, lepton_selection, met_selection, lepton_jet_2d_selection,
         top_tagged_jets, custom_increment_stats,
         process_ids,
@@ -121,11 +124,11 @@ def custom_increment_stats(
         lepton_producer
     },
     produces={
-        # jet_selection / top_tagged_jets / jet_veto_map now write real columns
-        # (Jet.jetId / FatJet.jetId / Jet.veto_map_mask), so they must be listed here
-        # too, not just in `uses`, for those columns to be kept
+        # jet_selection / top_tagged_jets / jet_veto_map / cutflow_features now write real
+        # columns (Jet.jetId / FatJet.jetId / Jet.veto_map_mask / cutflow.*), so they must
+        # be listed here too, not just in `uses`, for those columns to be kept
         mc_weight, lepton_selection, jet_selection, top_tagged_jets, jet_veto_map,
-        process_ids, category_ids, lepton_producer
+        cutflow_features, process_ids, category_ids, lepton_producer
     },
 
     # this is our top level Selector, so we need to make it reachable
@@ -187,6 +190,10 @@ def default(
     if self.dataset_inst.has_tag("is_qcd"):
         events, qcd_spikes_results = self[qcd_spikes](events, **kwargs)
         results += qcd_spikes_results
+
+    # per-step object kinematics/counts for cf.PlotCutflowVariables; needs results.objects
+    # from all selectors above, so runs after them, before category_ids
+    events = self[cutflow_features](events, results=results, **kwargs)
 
     events = self[category_ids](events, results=results, **kwargs) # needs categories
 

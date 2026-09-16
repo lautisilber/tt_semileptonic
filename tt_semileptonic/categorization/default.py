@@ -37,12 +37,26 @@ def cat_1e(self: Categorizer, events: ak.Array, **kwargs) -> ak.Array:
 
 @categorizer(uses={"cutflow.n_toptag_delta_r_lepton"})
 def cat_0t(self: Categorizer, events: ak.Array, **kwargs) -> ak.Array:
-    """Select only events with zero top-tagged fat jets."""
+    """
+    Select only events with zero top-tagged fat jets (the "resolved" regime).
+
+    Uses ``n_toptag_delta_r_lepton``, not the plain ``n_toptag`` -- a fat jet only counts
+    here if it's also separated from the selected lepton (delta_r > cfg.x.jet_selection.
+    ak8.delta_r_lep, see selection/fatjets.py). In a boosted semileptonic event, the
+    hadronic top's fat jet should sit well away from the lepton, which comes from the
+    other, leptonically-decaying top; a "tagged" fat jet close to the lepton is more
+    likely some other structure than a genuine, independent second top.
+    """
     mask = (Route("cutflow.n_toptag_delta_r_lepton").apply(events) == 0)
     return events, mask
 
 @categorizer(uses={"cutflow.n_toptag_delta_r_lepton"})
 def cat_1t(self: Categorizer, events: ak.Array, **kwargs) -> ak.Array:
-    """Select only events with exactly one top-tagged fat jet."""
+    """
+    Select only events with exactly one top-tagged fat jet (the "boosted" regime).
+
+    See cat_0t's docstring for why this uses the lepton-separated
+    ``n_toptag_delta_r_lepton`` count rather than the plain ``n_toptag``.
+    """
     mask = (Route("cutflow.n_toptag_delta_r_lepton").apply(events) == 1)
     return events, mask
