@@ -5,6 +5,36 @@ commit's worth of work.
 
 ---
 
+## Golden JSON filter (data) + jet veto map (data + MC)
+
+Both were config-ready but unwired (external files `lumi.golden` / `jet_veto_map`
+already registered in `config_helper.py`; a stale, superseded attempt at calling them
+existed only in the scratch `selection/default_old.py`). Wired into
+`selection/default.py::default`, mirroring mttbar's `selection/default.py` placement.
+
+- **`columnflow.selection.cms.json_filter.json_filter`**: certified-good-luminosity
+  cut, **data only** (no MC equivalent -- MC has no runs/luminosity blocks to
+  certify). Called right after `met_filters`, gated on `self.dataset_inst.is_data`;
+  its own step key `"json"` is renamed to `"JSON"` on merge, matching how
+  `met_filters`'s `"met_filter"` is renamed to `"METFilters"` just above it. Declared
+  in `uses` only -- it writes no column, just a step.
+- **`columnflow.selection.cms.jets.jet_veto_map`**: rejects events with a jet in a
+  detector region JME flagged as bad (dead/noisy calorimeter towers, timing issues)
+  for the given data-taking period; applies to **both data and MC**. Called after
+  `top_tagged_jets`, merged with a plain `results +=` (its own step is already named
+  `"jet_veto_map"`, which already matched the step label
+  `defaults_and_groups_helper.py:383` had waiting for it). Declared in both `uses` and
+  `produces` -- unlike `json_filter` it does write a real column
+  (`Jet.veto_map_mask`).
+  - For Run 3 it evaluates the map using the jet's `tightLepVeto` `jetId` bit rather
+    than muon-proximity cleaning (Run 2 convention); since it runs after
+    `jet_selection` in our selector, it reads the `Jet.jetId` already recomputed by
+    the `jet_id` producer added earlier -- not the unreliable stored NanoAOD bit.
+
+Verified: `cf.SelectEvents` runs clean with both added.
+
+---
+
 ## Weight-producer chain (pu/muon/electron/normalization/top_pt) + b-tag SF placeholder
 
 Ported the weight side of `mtt/production/weights.py` -- the config already had
