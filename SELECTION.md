@@ -1,467 +1,241 @@
-# Event selection
+# Selection — tt_semileptonic
 
-Reference for the `default` event selector (`--selector default`), run by
-`cf.SelectEvents`. Ported from `mttbar` (`mtt/selection/`), adapted for the 2024
-NanoAOD v15 campaign and split into one file per object group.
+Detailed, ordered description of every calibration step, filter, cut, and selection
+applied to an event, from the raw NanoAOD input through `cf.ReduceEvents`. Task order:
 
-- [Architecture](#architecture)
-- [The `default` selector](#the-default-selector)
-- [Steps, in execution order](#steps-in-execution-order)
-- [Objects kept for `ReduceEvents`](#objects-kept-for-reduceevents)
-- [Columns produced](#columns-produced)
-- [Config parameters](#config-parameters)
-- [Difficulties overcome](#difficulties-overcome)
-- [Not implemented yet](#not-implemented-yet)
+```
+cf.CalibrateEvents  ->  cf.SelectEvents  ->  cf.ReduceEvents
+(calibration/default.py)  (selection/default.py)  (cf_default reducer)
+```
+
+`cf.CalibrateEvents` corrects object 4-vectors (jets, MET) but rejects no events.
+`cf.SelectEvents` computes per-event/per-object boolean masks (it does not remove
+anything from the array itself) and assigns categories. `cf.ReduceEvents` is where
+events actually get dropped — it applies the combined mask computed in `cf.SelectEvents`
+and builds the final, trimmed set of columns and object collections used downstream.
 
 ---
 
-## Architecture
+## 1. Calibration (`cf.CalibrateEvents`, `calibration/default.py`)
 
-### Files
+Run in this order:
 
-| file | contents |
-|---|---|
-| `selection/default.py` | the exposed `default` selector (orchestrator) + `custom_increment_stats` |
-| `selection/leptons.py` | `lepton_selection` — turns the lepton columns into a step + object lists |
-| `selection/jets.py` | `jet_selection` — AK4 jets, b-tagging, lepton-jet cleaning |
-| `selection/met.py` | `met_selection` — channel-dependent PuppiMET cut |
-| `selection/lepton_jet_2d.py` | `lepton_jet_2d_selection` — 2D cut for high-pt leptons |
-| `selection/fatjets.py` | `top_tagged_jets` — AK8 top tagging + all-hadronic veto |
-| `production/lepton.py` | `lepton_definition` (writes the lepton columns), `lepton_producer` (builds `Lepton`), `selected_lepton_jet_mask` helper |
+### 1.1 `mc_weight`
+MC only. Writes a per-event `mc_weight` column: the sign of the generator weight
+(`genWeight`), used to correct for MC samples with negative-weight events.
 
-All are registered through `law.cfg` `selection_modules` / `production_modules`.
+### 1.2 `deterministic_seeds`
+Writes a per-event `deterministic_seed` and a per-jet `Jet.deterministic_seed`, derived
+from run/luminosity-block/event numbers so that random-number-dependent corrections
+(e.g. JER smearing) are reproducible across re-runs. The per-jet seed is currently
+produced but not yet wired into JER's smearing (JER uses its default event-based random
+generator instead, see §1.4).
 
-### How a columnflow selector works
+### 1.3 `jet_lepton_cleaner`
+Corrects AK4 jet 4-vectors for lepton contamination. For any electron or muon whose PF
+candidates were clustered into a jet (identified via `Jet.{muon,electron}Idx1/2` — *any*
+matched lepton, not only the one signal lepton chosen later in selection), the lepton's
+4-vector is subtracted from the jet's 4-vector, provided the result passes three sanity
+checks:
+- the cleaned jet mass stays non-negative (within a small numerical tolerance),
+- the angle between the original and cleaned jet directions doesn't change by more than
+  90° (relaxed to any change if the cleaned jet's pt drops below 10 GeV, since a jet that
+  is almost entirely the lepton can flip direction on cleaning due to resolution effects),
+- the lepton's energy is compatible (within 10%) with the jet's charged-EM (electron) or
+  muon (muon) PF energy fraction.
 
-Each `@selector` is a function `(events, **kwargs) -> (events, SelectionResult)`.
-`SelectionResult` has three dicts:
+Before cleaning, NanoAOD's own default jet energy correction is undone (`Jet.rawFactor`
+reset to 0), so the subsequent JEC (§1.4) computes its correction starting from the
+lepton-subtracted raw jet.
 
-- **`steps`** — `{name: per-event bool mask}`. Every step from every sub-selector is
-  combined with a logical AND into the final event decision
-  (`results.event = reduce(and_, results.steps.values())` in `default`). The step names
-  also drive the cutflow: `cf.PlotCutflow` shows the yield after cumulatively applying
-  each step in the order given by `config.x.selector_step_groups["default"]`.
-- **`objects`** — `{SourceCollection: {NewCollection: index_array}}`. In `ReduceEvents`,
-  each `NewCollection` is created by applying `index_array` to `SourceCollection`
-  (e.g. `objects["Jet"]["BJet"]` → a new `BJet` collection). The masks are **not**
-  applied during `SelectEvents` — only recorded.
-- **`aux`** — free-form extras carried on the result (`results.x.<key>`), e.g. per-event
-  multiplicities. Not persisted unless explicitly used.
+### 1.4 `jet_energy` (JEC + JER)
+Run in this order: **AK4 JEC → AK4 JER → AK8 JEC → AK8 JER** (AK4 is fully corrected,
+including its own MET propagation, before AK8 is touched; AK8 does not repeat MET
+propagation).
 
-Sub-selectors/producers are invoked via `self[sub](events, **kwargs)` and must be listed
-in the caller's `uses=` (and `produces=` if their columns should survive). `@sub.init`
-functions add config-dependent column dependencies once `self.config_inst` is known.
-
-### Where it sits in the task graph
-
-```
-GetDatasetLFNs → CalibrateEvents → SelectEvents → MergeSelectionMasks → ReduceEvents → …
-                                        │
-                                        ├── results_*.parquet   the step masks
-                                        ├── columns_*.parquet    channel_id, pt_regime,
-                                        │                        mc_weight, category_ids, …
-                                        └── stats_*.json         counts + weight sums
-```
-
-`SelectEvents` does **not** drop events or objects; it records the decision. `ReduceEvents`
-(downstream) applies `results.event` and the `objects` index lists, keeping only the
-columns listed in `config.x.keep_columns["cf.ReduceEvents"]`.
+- **JEC** (jet energy correction): corrects `Jet.pt`/`Jet.mass` (and, for AK4,
+  `PuppiMET.pt`/`.phi` via type-1 MET propagation) for pileup offset (L1FastJet),
+  non-linear detector response (L2Relative, L3Absolute), and residual data/MC differences
+  (L2L3Residual). 2024 campaign `Summer24Prompt24`, version `V2`, jet type `AK4PFPuppi`
+  (AK4) / `AK8PFPuppi` (AK8).
+- **JER** (jet energy resolution smearing, MC only): smears MC jet pt to match the
+  measured data resolution (gen-jet-matched where possible, otherwise stochastic). No
+  official 2024 JER corrections exist yet; the 2023 post-BPix campaign
+  (`Summer23BPixPrompt23_RunD`) is used as a fallback.
+- Only the **nominal** correction is currently applied for both JEC and JER — no
+  uncertainty-shifted variations are produced yet, even though the corresponding
+  `jec_Total_up/down` / `jer_up/down` shifts are already defined in the config.
 
 ---
 
-## The `default` selector
+## 2. Selection (`cf.SelectEvents`, `selection/default.py`)
 
-`selection/default.py::default`, body order:
+Selector steps, in the order they run. Each step contributes a boolean mask; an event
+survives only if **all** steps' masks are `True` (the final AND is computed once, after
+every step below has run — see §2.13).
+
+### 2.1 MET filters — step `METFilters`
+Standard data-quality event flags (rejects instrumental noise / reconstruction failures):
+`Flag.goodVertices`, `Flag.globalSuperTightHalo2016Filter`,
+`Flag.EcalDeadCellTriggerPrimitiveFilter`, `Flag.BadPFMuonFilter`,
+`Flag.BadPFMuonDzFilter`, `Flag.hfNoisyHitsFilter`, `Flag.eeBadScFilter`,
+`Flag.ecalBadCalibFilter`. All must be `True`. Applied to both data and MC.
+
+### 2.2 Golden JSON — step `JSON` (data only)
+Keeps only events from certified-good luminosity blocks (the standard "good runs" lumi
+mask). No MC equivalent — simulation has no runs/luminosity blocks to certify.
+
+### 2.3 `mc_weight` (MC only)
+The same sign-of-`genWeight` correction as §1.1 is computed again here (both the
+calibration-stage and this selection-stage `mc_weight` calls currently coexist in the
+code).
+
+### 2.4 Lepton selection — steps `lepton`, `dilepton_veto`
+The single source of truth for what counts as a good lepton (used for both electrons and
+muons, symmetrically):
+
+- **Two pt regimes**, each with its own identification criteria:
+  - **Low-pt**: muon `30 < pt <= 55` GeV with `tightId` + `pfIsoId >= 4` (PFIsoTight);
+    electron `35 < pt <= 120` GeV with `mvaIso_WP80`.
+  - **High-pt**: muon `pt > 55` GeV with `highPtId == 2` (global high-pt, includes
+    tracker high-pt); electron `pt > 120` GeV with `mvaNoIso_WP80`.
+  - A per-event `pt_regime` column (0 = none, 1 = low-pt, 2 = high-pt) records which
+    regime the event's signal lepton falls into.
+- **Kinematic acceptance**: muon `|eta| < 2.4`; electron `|eta_SC| < 2.5`
+  (supercluster eta = `eta + deltaEtaSC`) with the barrel-endcap transition region
+  `1.44 < |eta| < 1.57` excluded.
+- **Extra-lepton veto**: a looser definition (muon `pt > 25`, `tightId`, `|eta| < 2.4`;
+  electron `pt > 25`, `cutBased >= 3` (medium), `|eta_SC| < 2.5`) identifies additional
+  leptons that are *not* the signal lepton. Step `dilepton_veto` requires at most one
+  lepton total (signal + veto combined) across both flavors.
+- Step `lepton` requires exactly one signal lepton of a single flavor
+  (`channel_id != 0`); `channel_id` is `1` for electron, `2` for muon, `0` otherwise.
+- Produces `VetoMuon`/`VetoElectron` object collections (the veto leptons) alongside the
+  signal `Muon`/`Electron` index lists used by `cf.ReduceEvents`.
+
+### 2.5 Jet selection (AK4) — steps `jet`, `bjet`
+- **Lepton-jet overlap removal**: the analysis jet's own PF-clustered signal lepton (via
+  `Jet.{muon,electron}Idx1/2` matched to the one selected signal lepton) is excluded from
+  every jet collection below.
+- **Loose jets**: `pt > 0.1` GeV (keeps essentially all real jets, filters out
+  cleaned/degenerate ones).
+- **Baseline jets**: `pt > 30` GeV, `|eta| < 2.5`, and passing the **tight jet ID**
+  (recomputed from correctionlib rather than trusting the stored NanoAOD `jetId` bit,
+  which is unreliable in recent NanoAOD versions).
+- Step `jet`: at least two baseline jets, with **channel-dependent** leading/subleading
+  pt thresholds — electron channel `50`/`40` GeV, muon channel `50`/`50` GeV.
+- **b-tagging**: baseline jets are split into `BJet` (b-tagged) / `LightJet` (not) using
+  the UParT AK4 discriminant (`btagUParTAK4B`) at the medium working point (`0.1272` for
+  2024 — currently a placeholder value pending official calibration). Step `bjet`:
+  at least one b-tagged jet.
+
+### 2.6 MET selection — step `met`
+Channel-dependent missing transverse momentum cut on `PuppiMET.pt`: `> 60` GeV in the
+electron channel, `> 70` GeV in the muon channel.
+
+### 2.7 Lepton-jet 2D isolation — step `lepton_jet_2d`
+Applies only in the **high-pt** lepton regime (`pt_regime == 2`), where the standard
+isolation requirement is absent from the lepton ID; passes everything else through
+unconditionally. Requires, for the selected lepton relative to the nearest jet with
+`pt > 15` GeV (excluding the lepton's own jet):
 
 ```
-1.  met_filters                     → step  METFilters
-2.  mc_weight            (MC only, adds the corrected generator weight column)
-3.  lepton_selection                → steps lepton, dilepton_veto
-                                      cols  Muon/Electron.pass_lepton, .pass_veto_lepton,
-                                            channel_id, pt_regime
-4.  jet_selection                   → steps jet, bjet
-5.  met_selection                   → step  met
-6.  lepton_jet_2d_selection         → step  lepton_jet_2d
-7.  lepton_producer     (builds the Lepton column from channel_id)
-8.  top_tagged_jets                 → step  all_had_veto
-9.  category_ids         (writes category_ids from the leaf categorizers)
-10. results.event = AND of all steps
-11. process_ids          (writes process_id)
-12. custom_increment_stats  (fills stats_*.json)
+delta_r(lepton, closest jet) > 0.4   OR   pt_rel(lepton, jet) > 25 GeV
 ```
 
-### Why this order
+where `pt_rel` is the magnitude of the lepton's momentum component perpendicular to the
+jet axis.
 
-- **`lepton_selection` before everything channel-dependent.** It writes `channel_id`
-  (1 = e, 2 = µ, 0 = neither) and `pt_regime`. `jet_selection` (leading-jet pt cut),
-  `met_selection` (MET cut) and `lepton_jet_2d_selection` all branch on `channel_id`, so
-  they must run after it. Getting this wrong gives
-  `'jet_selection' did not receive any columns matching: channel_id`.
-- **`lepton_producer` before `top_tagged_jets`.** The all-hadronic-veto selector needs
-  the merged `Lepton` collection for the ΔR-to-lepton computation.
-- **`category_ids` after all steps.** `cat_1e` / `cat_1m` read `channel_id`; the (still
-  disabled) `cat_0t` / `cat_1t` would read `cutflow.n_toptag_delta_r_lepton`.
+### 2.8 Lepton collection merge
+Not a cut — builds a single `Lepton` column per event by selecting either the signal
+`Muon` or `Electron` based on `channel_id`, so downstream steps (top-tagging ΔR, cutflow
+features) can refer to "the lepton" without branching on flavor.
 
-The **cutflow display order** is set separately in
-`config/defaults_and_groups_helper.py::set_selector_steps` and is currently
-`METFilters, lepton, dilepton_veto, jet, bjet, met, lepton_jet_2d, all_had_veto`. It must
-list exactly the steps the selectors produce — `law.cfg` has
-`missing_selector_step_strategy: raise`, so a stale entry crashes the cutflow tasks.
+### 2.9 AK8 top tagging + all-hadronic veto — step `all_had_veto`
+- **Top-tag score**: computed from three GloParT-v3 categories,
+  `(TopbWqq + TopbWq) / (TopbWqq + TopbWq + QCD)` (guarded against 0/0).
+- **Baseline AK8 jets**: `pt > 200` GeV, `|eta| < 2.5`.
+- **Top-tagged AK8 jets**: `pt > 400` GeV, `|eta| < 2.5`, softdrop mass in
+  `[105, 210]` GeV, top-tag score above the working point (`0.821` for 2024 — currently a
+  placeholder value pending official calibration), and passing the tight AK8 jet ID
+  (recomputed, same reasoning as AK4 in §2.5).
+- A further **lepton-separated** top-tagged subset additionally requires
+  `delta_r(fat jet, Lepton) > 0.8` (events without a `Lepton` pass this automatically) —
+  this is the count actually used by the `0t`/`1t` categories (§2.11).
+- Step `all_had_veto`: fewer than two top-tagged AK8 jets in the event.
+- Produces `FatJet` (baseline), `FatJetTopTag`, and `FatJetTopTagDeltaRLepton` object
+  collections.
+
+### 2.10 Jet veto map — step `jet_veto_map`
+Applied to **both** data and MC. Rejects events containing an AK4 jet in a detector
+region flagged as bad for the given data-taking period (dead/noisy calorimeter towers,
+timing issues). Jets are pre-selected for this check with `pt > 15` GeV, a PF EM-energy
+fraction cut (`chEmEF + neEmEF < 0.9`), and the tight-with-lepton-veto jet-ID bit
+(Run 3 convention); jet eta/phi are clipped into the correction map's valid input domain
+(`|eta| <= 5.19`, `|phi| <= pi`) before evaluation. Produces a per-jet
+`Jet.veto_map_mask` column in addition to the event-level step.
+
+### 2.11 QCD spikes — step `QCDSpikes` (QCD MC only)
+Applied only to datasets tagged `is_qcd`. HT-binned QCD MC is prone to a mismeasurement
+pathology where a single jet is reconstructed with more pt than the generator-level
+hard-scatter energy scale can account for. Rejects events where the leading jet's pt
+exceeds the event's generator-level `LHE.HT`.
+
+### 2.12 Cutflow features
+Not a cut — writes bookkeeping columns (under the `cutflow.*` namespace) used for
+cutflow plotting and by the `0t`/`1t` categorizers: per-rank pt/eta for the four leading
+jets and fat jets, the leading lepton's pt/eta, object counts (`n_jet`, `n_bjet`,
+`n_lightjet`, `n_toptag`, `n_toptag_delta_r_lepton`, `n_muon`, `n_electron`), and
+generator-level `LHE.HT` for non-diboson MC.
+
+### 2.13 Categorization
+Not an event-rejecting cut — assigns each event to one or more analysis categories
+(`category_ids` column), computed from the columns produced above:
+- `incl` — every event (fully inclusive).
+- `1e` / `1m` — electron / muon channel (`channel_id`).
+- `0t` / `1t` — zero / exactly one top-tagged AK8 jet, using the lepton-separated count
+  from §2.9 (`cutflow.n_toptag_delta_r_lepton`); `0t` corresponds to the *resolved*
+  topology (top decay products captured as separate AK4 jets), `1t` to the *boosted*
+  topology (a full top decay captured in one AK8 jet).
+- Combined categories (`1e__0t`, `1m__1t`, etc.) are generated automatically from the
+  `lepton` × `n_top_tags` category groups.
+
+### 2.14 Combined event selection
+All boolean masks from steps §2.1–§2.11 (`METFilters`, `JSON` if data, `lepton`,
+`dilepton_veto`, `jet`, `bjet`, `met`, `lepton_jet_2d`, `all_had_veto`, `jet_veto_map`,
+`QCDSpikes` if QCD MC) are combined with a logical AND into the final per-event selection
+decision. This is the mask `cf.ReduceEvents` applies (§3).
+
+### 2.15 Process IDs and stats bookkeeping
+Not cuts — `process_ids` tags each event with the physics process it belongs to (for
+per-process plotting/normalization); a custom stats step accumulates per-process event
+counts and summed MC weights (before and after selection) into the task's stats output,
+used later by the normalization-weight calculation.
 
 ---
 
-## Steps, in execution order
+## 3. Reduction (`cf.ReduceEvents`)
 
-### 1. MET filters — step `METFilters`
-
-`columnflow.selection.cms.met_filters`, driven by `config.x.met_filters` (a set of
-`Flag.*` NanoAOD branches). The selector ANDs all the flags; `default` assigns the
-result to `results.steps.METFilters`. Standard Run-3 recommendation:
-
-```
-Flag.goodVertices, Flag.globalSuperTightHalo2016Filter,
-Flag.EcalDeadCellTriggerPrimitiveFilter, Flag.BadPFMuonFilter,
-Flag.BadPFMuonDzFilter, Flag.hfNoisyHitsFilter, Flag.eeBadScFilter,
-Flag.ecalBadCalibFilter
-```
-
-No external file needed.
-
-### 2. Lepton definition — `production/lepton.py::lepton_definition`
-
-A `@producer` (not a selector) — the single source of truth for "what is a selected
-lepton". Reads `config.x.lepton_selection.{mu,e}` and writes four object columns and two
-event columns. `@lepton_definition.init` declares the config-named ID/isolation branches.
-
-**Muon masks** (`_muon_masks`, from `cfg.x.lepton_selection.mu`):
-
-| regime | cuts |
-|---|---|
-| low-pt | `\|eta\| < 2.4`, `30 < pt ≤ 55`, `pfIsoId ≥ 4` (PFIsoTight), `tightId` |
-| high-pt | `\|eta\| < 2.4`, `pt > 55`, `highPtId == 2` (global high-pt) |
-| **tight** (signal) | `low_pt OR high_pt` → `Muon.pass_lepton` |
-| veto | `\|eta\| < 2.4`, `pt > 25`, `tightId`, **and not** a tight muon → `Muon.pass_veto_lepton` |
-
-Rationale: for low-pt muons the isolation is applied explicitly (`pfIsoId`); for high-pt
-muons isolation is **not** applied here — it is replaced by the [lepton-jet 2D cut](#5-lepton-jet-2d-cut--step-lepton_jet_2d).
-
-**Electron masks** (`_electron_masks`, from `cfg.x.lepton_selection.e`):
-
-| regime | cuts |
-|---|---|
-| η acceptance | `\|eta + deltaEtaSC\| < 2.5` (supercluster η) **and** outside the barrel-endcap gap `1.44 < \|eta\| < 1.57` |
-| low-pt | η acceptance, `35 < pt ≤ 120`, `mvaIso_WP80` (MVA ID incl. isolation) |
-| high-pt | η acceptance, `pt > 120`, `mvaNoIso_WP80` (MVA ID without isolation) |
-| **tight** (signal) | `low_pt OR high_pt` → `Electron.pass_lepton` |
-| veto | `\|eta+deltaEtaSC\| < 2.5`, `pt > 25`, `cutBased ≥ 3` (medium), **and not** tight → `Electron.pass_veto_lepton` |
-
-**`channel_id`** (per-event `int8`, kept past `ReduceEvents`):
-
-```
-n_muon     = sum(Muon.pass_lepton)
-n_electron = sum(Electron.pass_lepton)
-channel_id = 2  if n_muon == 1 and n_electron == 0     (muon channel)
-           = 1  if n_electron == 1 and n_muon == 0     (electron channel)
-           = 0  otherwise
-```
-
-Ids come from `cfg.add_channel("e", id=1)` / `("mu", id=2)`. `channel_id` is the compact
-event label the rest of the analysis keys on (`lepton_producer`, the `cat_1e`/`cat_1m`
-categorizers which run after `ReduceEvents`, plotting splits).
-
-**`pt_regime`** (per-event `int8`, kept): regime of the single signal lepton of the
-winning channel — `1` = low-pt, `2` = high-pt, `0` = undefined. Consumed by the 2D cut.
-
-### 3. Lepton selection — `selection/leptons.py::lepton_selection`
-
-A thin consumer. Calls `self[lepton_definition]`, then:
-
-- pt-sorted index lists (`sorted_indices_from_mask`) from the four `pass_*` masks →
-  `objects`: `Muon`/`VetoMuon`, `Electron`/`VetoElectron`.
-- steps:
-  - **`lepton`** = `channel_id != 0` — exactly one signal lepton, in exactly one flavour.
-  - **`dilepton_veto`** = `(n_tight + n_veto) ≤ 1` — reject events with any second lepton
-    (signal or veto). `n_tight` = signal muons + electrons, `n_veto` = veto muons +
-    electrons.
-- aux: `pt_regime`, `n_muon`, `n_electron`.
-
-### 4. Jet selection — `selection/jets.py::jet_selection`
-
-Reads `config.x.jet_selection.ak4`. `@jet_selection.init` declares
-`Jet.{pt,eta,phi,mass,btagUParTAK4B}` plus the lepton-match columns.
-
-**Lepton-jet cleaning first.** NanoAOD's anti-kt clustering turns an isolated lepton into
-its own PF jet. `selected_lepton_jet_mask(events)` returns a per-jet bool that is `True`
-when `Jet.{muon,electron}Idx1/2` points at the event's `pass_lepton` lepton; those jets
-are removed from **every** jet collection below (`not_lepton = ~mask`).
-
-| collection | mask | purpose |
-|---|---|---|
-| `LooseJet` | `not_lepton & pt > 0.1` | every real jet (cleanup / MET etc. later) |
-| `Jet` (baseline) | `not_lepton & \|eta\| < 2.5 & pt > 30` | the analysis jets |
-| `BJet` | baseline `& btagUParTAK4B ≥ 0.1272` (UParT AK4 medium) | b-tagged |
-| `LightJet` | baseline `& btagUParTAK4B < 0.1272` | non-b |
-
-Steps:
-
-- **`jet`** = `≥ 2` baseline jets with **channel-dependent** leading/subleading pt: e
-  channel `(50, 40)`, µ channel `(50, 50)` GeV. Implemented via
-  `ak.pad_none(jet[jet_indices], 2)` then `leading_jets[:, 0/1].pt > threshold`, with
-  `ak.fill_none(..., False)` for events with < 2 jets.
-- **`bjet`** = `≥ 1` b jet.
-
-aux: `n_jet`, `n_bjet`.
-
-> **Tight jet ID is not applied.** `Jet.jetId` is absent from 2024 NanoAOD v15; it must
-> be recomputed by `columnflow.production.cms.jet.jet_id`, which needs a JME correction
-> file + `cf.BundleExternalFiles`. Deferred with the rest of the corrections stack.
-
-### 5. Lepton-jet 2D cut — step `lepton_jet_2d`
-
-`selection/lepton_jet_2d.py::lepton_jet_2d_selection`. Reads `config.x.lepton_jet_iso`
-(`min_pt: 15`, `min_delta_r: 0.4`, `min_pt_rel: 25`).
-
-Replaces the isolation requirement for **high-pt leptons** (whose ID drops isolation).
-For each channel, using the single `pass_lepton` lepton and the `pt > 15`, lepton-cleaned
-jets:
-
-```
-far      = ΔR(lepton, every jet) > 0.4          (lepton isolated from all jets)
-pt_rel   = |p_lep × p_jet_closest| / |p_jet_closest|    (lepton momentum ⟂ to nearest jet)
-ch_sel   = far  OR  pt_rel > 25 GeV
-```
-
-`pt_rel` uses `lepton.to_Vector3D().cross(jet.to_Vector3D()).p / jet_3d.p`. The per-channel
-`ch_sel` is selected by `channel_id`, then:
-
-```
-sel = ch_sel   where pt_regime == 2   (high-pt)
-    = True     otherwise               (low-pt leptons already isolated; undefined events pass)
-```
-
-Uses the NanoAOD vector behavior directly (`metric_table`, `to_Vector3D`) — no explicit
-`attach_coffea_behavior` (verified the behavior survives the whole selector chain).
-
-### 6. MET selection — step `met`
-
-`selection/met.py::met_selection`. Reads `config.x.met_selection` (`column: PuppiMET`,
-`min_pt: {e: 60, mu: 70}`). `@met_selection.init` requests `PuppiMET.{pt,phi}`.
-
-```
-met = PuppiMET.pt > 60   in the e channel
-    = PuppiMET.pt > 70   in the µ channel
-```
-
-### 7. Lepton column — `production/lepton.py::lepton_producer`
-
-Multiplexes `Muon` / `Electron` into a single per-event `Lepton` Lorentz vector based on
-`channel_id` (`== 2` → muon, `== 1` → electron), taking the first lepton, filling
-`(0,0,0,0)` when there is none, and attaching `PtEtaPhiMLorentzVector` behavior. Consumed
-by `top_tagged_jets` and (later) the ttbar reconstruction.
-
-### 8. AK8 top tagging / all-hadronic veto — step `all_had_veto`
-
-`selection/fatjets.py::top_tagged_jets`. Reads `config.x.jet_selection.ak8`.
-`@top_tagged_jets.init` declares `FatJet.{pt,eta,phi,mass,msoftdrop}` + the three tagger
-score branches.
-
-**Top-vs-QCD score** (GloParT-v3):
-
-```
-score = (globalParT3_TopbWqq + globalParT3_TopbWq)
-        / (globalParT3_TopbWqq + globalParT3_TopbWq + globalParT3_QCD)      (0/0 guarded → 0)
-toptag = score > 0.821                                                     (GloParTv3 tight)
-```
-
-**Top-tagged AK8 jet:** `pt > 400`, `|eta| < 2.5`, `105 < msoftdrop < 210`, `toptag`.
-
-Step:
-
-- **`all_had_veto`** = `sum(toptag_mask) < 2` — reject events with ≥ 2 top-tagged AK8
-  jets (all-hadronic ttbar contamination / mis-reconstruction). ~0.03 % of tt→SL events.
-
-`objects`: `FatJet` (`pt > 200`, `|eta| < 2.5`), `FatJetTopTag`,
-`FatJetTopTagDeltaRLepton` (top-tagged AK8 jets with `ΔR(fatjet, Lepton) > 0.8`).
-aux: `n_toptag`, `n_toptag_delta_r_lepton`.
-
-> Tight fat-jet ID (`FatJet.jetId`) is absent from nano v15 — same situation as AK4.
-
-### 9. Stats — `custom_increment_stats`
-
-Fills `stats_*.json` in place. Plain counts (`num_events`, `num_events_selected`),
-**per-process** counts (`num_events_per_process`,
-`num_events_selected_per_process` — required by columnflow's `normalization_weights`
-producer downstream) and, for MC, the sum of `mc_weight` for all and for selected events,
-inclusive and per process id.
+Applies the combined mask from §2.14 (events failing any selection step are dropped),
+then builds the final object collections referenced above (`BJet`, `LightJet`,
+`LooseJet` from `Jet`; `FatJetTopTag`, `FatJetTopTagDeltaRLepton` from `FatJet`;
+`VetoMuon`/`VetoElectron` from `Muon`/`Electron`) as new columns alongside their sources.
+Finally trims the event array down to a configured set of columns — the calibrated
+physics-object kinematics, generator-level information (MC), and the derived columns
+produced during selection (`channel_id`, `pt_regime`, `category_ids`, `process_id`,
+`mc_weight`, `cutflow.*`, the `Lepton` collection, etc.) — discarding everything else.
 
 ---
 
-## Objects kept for `ReduceEvents`
+## Known caveats
 
-From `results.objects` (created in `ReduceEvents`, kept per
-`config.x.keep_columns["cf.ReduceEvents"]`):
-
-| source | new collections |
-|---|---|
-| `Muon` | `Muon`, `VetoMuon` |
-| `Electron` | `Electron`, `VetoElectron` |
-| `Jet` | `Jet`, `LooseJet`, `BJet`, `LightJet` |
-| `FatJet` | `FatJet`, `FatJetTopTag`, `FatJetTopTagDeltaRLepton` |
-
----
-
-## Columns produced
-
-| column | by | kept past ReduceEvents |
-|---|---|---|
-| `Muon/Electron.pass_lepton` | `lepton_definition` | no (transient) |
-| `Muon/Electron.pass_veto_lepton` | `lepton_definition` | no |
-| `channel_id` | `lepton_definition` | **yes** |
-| `pt_regime` | `lepton_definition` | **yes** |
-| `Lepton.*` | `lepton_producer` | **yes** |
-| `mc_weight` | `mc_weight` (MC) | **yes** |
-| `process_id` | `process_ids` | **yes** |
-| `category_ids` | `category_ids` | **yes** |
-
----
-
-## Config parameters
-
-All in `config/run3/config_helper.py`.
-
-### `cfg.x.lepton_selection`
-
-```python
-"mu": {
-    "column": "Muon", "max_abseta": 2.4,
-    "min_pt": {"low_pt": 30, "high_pt": 55},
-    "iso": {"column": "pfIsoId", "min_value": 4},          # PFIsoTight
-    "id":  {"low_pt": {"column": "tightId", "value": True},
-            "high_pt": {"column": "highPtId", "value": 2}}, # global high-pt
-    "min_pt_addveto": 25, "max_abseta_addveto": 2.4,
-    "id_addveto": {"column": "tightId", "value": True},
-},
-"e": {
-    "column": "Electron", "max_abseta": 2.5,
-    "min_pt": {"low_pt": 35, "high_pt": 120},
-    "barrel_veto": [1.44, 1.57],
-    "mva_id": {"low_pt": "mvaIso_WP80", "high_pt": "mvaNoIso_WP80"},
-    "min_pt_addveto": 25, "max_abseta_addveto": 2.5,
-    "id_addveto": {"column": "cutBased", "min_value": 3},  # medium
-},
-```
-
-### `cfg.x.jet_selection`
-
-```python
-"ak4": {
-    "column": "Jet", "max_abseta": 2.5,
-    "min_pt": {"baseline": 30, "e": [50, 40], "mu": [50, 50]},
-    "btagger": {"column": "btagUParTAK4B", "wp": 0.1272},  # UParT AK4 medium
-},
-"ak8": {
-    "column": "FatJet", "max_abseta": 2.5,
-    "min_pt": {"baseline": 200, "toptagged": 400},
-    "msoftdrop": [105, 210],
-    "toptagger": {"column": ["globalParT3_TopbWqq", "globalParT3_TopbWq", "globalParT3_QCD"],
-                  "wp": 0.821},                             # GloParTv3 tight
-    "delta_r_lep": 0.8,
-},
-```
-
-### `cfg.x.met_selection` / `cfg.x.lepton_jet_iso`
-
-```python
-met_selection = {"column": "PuppiMET", "raw_column": "RawPuppiMET",
-                 "min_pt": {"e": 60, "mu": 70}}
-lepton_jet_iso = {"min_pt": 15, "min_delta_r": 0.4, "min_pt_rel": 25}
-```
-
----
-
-## Difficulties overcome
-
-Ordered roughly as encountered while building this.
-
-### `channel_id` is not a NanoAOD field
-
-It has to be *produced* by the analysis (from the selected-lepton counts) and written
-with `set_ak_column`, before any consumer. Missing it →
-`did not receive any columns matching: channel_id`. Now produced by `lepton_definition`.
-
-### `category_ids` runs a categorizer for *every leaf category*
-
-Not just the ones asked for on the CLI. Adding a category whose `@categorizer` reads a
-not-yet-produced column breaks `SelectEvents`. This is why the `0t` / `1t` top-tag
-categories are still commented out in `config/categories_helper.py` — `cat_0t` / `cat_1t`
-read `cutflow.n_toptag_delta_r_lepton`, which the cutflow-features producer (not yet
-added) would create.
-
-### Physics-object collections need the full `{pt,eta,phi,mass}` in `uses`
-
-Events are read with NanoAOD (`vector`) behavior. `events.Jet.pt` goes through `vector`,
-which raises `array does not have azimuthal coordinates` unless `phi` (and `mass`, for
-the 4-vector) were also requested — even when you only cut on `pt`/`eta`. Every
-sub-selector's `init` requests the full `{pt,eta,phi,mass}`; `met_selection` requests
-`PuppiMET.{pt,phi}`.
-
-### Execution order vs. static column resolution
-
-columnflow's static check (`used_columns` / `produced_columns`) validates the dependency
-*graph*, not the call order. It happily accepts a selector reading `channel_id` while the
-producer of `channel_id` is elsewhere in the tree — the failure only shows at runtime.
-`jet_selection` / `met_selection` / `lepton_jet_2d_selection` must be **called** after
-`lepton_selection` in `default`'s body.
-
-### NanoAOD clusters an isolated lepton into its own jet
-
-The AK4 jet collection contains a jet that *is* the selected lepton (`min ΔR ≈ 0.01`,
-verified). Consequences: (a) `jet_selection` counted the lepton as a jet; (b) the 2D cut,
-which looks for the closest jet to the lepton, always found the lepton itself
-(`pt_rel ≈ 0`) and rejected ~100 % of events. `mttbar` removes these in a
-`jet_lepton_cleaner` **calibrator** (needs JEC infra). We do the lightweight version:
-`selected_lepton_jet_mask` matches `Jet.{muon,electron}Idx1/2` to the selected lepton and
-drops that jet from every jet collection. After cleaning, `min ΔR → ~1.3`.
-
-### Nullable-type propagation → `SelectionResult event mask must be of type N * bool`
-
-`ak.firsts(...)` gives a **per-event `?int`** (None when the event has no selected
-lepton). Comparing that against the jagged `Jet.muonIdx1` (`N * var * int`) makes the
-**whole jet list nullable** — `N * option[var * bool]`. `ak.fill_none(x, False)` does not
-fix an outer-level option, so it survived into `jet_mask` → the `bjet` step became
-`?bool` → `reduce(and_, steps)` → `results.event` was `?bool`. Fix: de-option the lepton
-index first (`ak.fill_none(..., -1)`) and guard with `has_mu` / `has_e` so the `-1`
-sentinel can't spuriously match lepton-less jets in the other channel.
-
-### GloParT top-tagger score is 0/0 for soft fat jets
-
-`(TopbWqq + TopbWq) / (TopbWqq + TopbWq + QCD)` → `NaN` when all three scores are ~0.
-`NaN > wp` is `False` (harmless for the mask) but noisy. Guarded with a nested `ak.where`.
-
-### Infrastructure issues that shaped the selection
-
-- **XRootD atexit deadlock** — reading input over `root://` hangs the sandbox process at
-  exit *after* it finished. Fixed by reading from the DESY dcache POSIX mount
-  (`law.cfg` `[local_desy_dcache]` first in `lfn_sources`). See `ISSUES.md`.
-- **`cf.PlotCutflow` regression (columnflow #783)** — the variable axis is not reduced;
-  worked around with a wrapper plot function. See `ISSUES.md`.
-- **`num_events_per_process`** — columnflow's `normalization_weights` (run for MC inside
-  `cf.MergeSelectionMasks`) requires this key in the selection stats; `custom_increment_stats`
-  now writes it.
-- **`selector_step_groups` / `default_categories` / dataset & process groups** — all
-  ported from `mttbar` with names that don't exist in this campaign; trimmed to what the
-  selection actually produces. A stale `selector_step_groups` entry crashes the cutflow
-  tasks (`missing_selector_step_strategy: raise`).
-
----
-
-## Not implemented yet
-
-| piece | blocker |
-|---|---|
-| tight AK4 / AK8 jet ID | `Jet.jetId` / `FatJet.jetId` absent from nano v15 → need `columnflow.production.cms.jet.{jet_id,fatjet_id}` + JME correction file + `cf.BundleExternalFiles` |
-| HLT trigger requirement | needs a `cfg.x.triggers` config block; deferred `check_early` (early/late run split) |
-| jet energy corrections (JEC/JER) + `jet_lepton_cleaner` | corrections infrastructure |
-| cutflow features (`cutflow.*`) | next task — unblocks `cf.PlotCutflowVariables1D` and re-enabling the `0t`/`1t` categories |
-| gen-level features (`gen_parton_top`, `gen_v_boson`) | reduction / production step |
-| data selection | `SelectEvents` currently fails on `data_*` datasets (undiagnosed; also no golden-JSON / lumi filter) |
+- **b-tag working point** (`0.1272`, UParT AK4 medium) and **top-tag working point**
+  (`0.821`, GloParT-v3 tight) are both explicitly marked as placeholder values in the
+  config, pending official 2024 calibration.
+- **JER** falls back to the 2023 post-BPix campaign; no 2024 JER corrections exist yet.
+- **JEC/JER uncertainty variations** are not yet produced — only nominal corrections run.
+- **No trigger requirement** is applied anywhere in the selection.
+- **MET-φ (xy) correction** is not applied — the necessary 2024 correction file has not
+  yet been published by JME.
+- `mc_weight` is computed twice (once in calibration, once in selection) with identical
+  logic; both calls currently coexist.
