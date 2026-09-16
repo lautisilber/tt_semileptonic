@@ -37,7 +37,7 @@ def plot_cutflow(
     Task call::
 
         law run cf.PlotCutflow --version test --calibrators default --selector default \\
-            --datasets mc --processes default --categories incl
+            --datasets mc --processes all --categories incl
     """
     reduced = {}
     for key, h in hists.items():

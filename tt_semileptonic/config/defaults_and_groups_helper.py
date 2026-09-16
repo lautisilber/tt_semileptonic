@@ -88,8 +88,10 @@ def set_process_groups(
         ],
     })
 
-    base_processes.default = base_processes.bkg + base_processes.sig
-    base_processes.mc_no_qcd = [p for p in base_processes.default if p != "qcd"]
+    # all MC processes (bkg + sig); note this does *not* include "data", unlike the
+    # "all" dataset group (config.x.dataset_groups), which does
+    base_processes.all = base_processes.bkg + base_processes.sig
+    base_processes.mc_no_qcd = [p for p in base_processes.all if p != "qcd"]
     overrides = {
         # set custom process groups for specific runs and tags if needed
         (3, "2022preEE"): DotDict.wrap({
