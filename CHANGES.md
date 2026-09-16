@@ -5,6 +5,40 @@ commit's worth of work.
 
 ---
 
+## First cf.ProduceColumns run: two bugs in the weight-producer chain
+
+First actual run of `cf.ProduceColumns --producer default` (the weight-producer chain
+written earlier had only ever been syntax-checked, never executed). Surfaced two bugs,
+both fixed:
+
+- **`production/weights.py`**: `weights_init` declared `"Muon.{pt,eta}"` in `uses` --
+  missing `phi`/`mass`. NanoAOD's vector behavior treats `.pt` as a computed property
+  that needs a *complete* azimuthal coordinate pair (`pt`+`phi`, or `px`+`py`) to
+  recognize the object as a momentum vector at all; with `phi` never even read from
+  disk, `events.Muon.pt` raised `ValueError: array does not have azimuthal coordinates`
+  in the `muon_mask` computation, even though only `pt`/`eta` are actually used there.
+  Same class of bug `AGENTS.md`'s "Physics-object collections need the full
+  `{pt,eta,phi,mass}`" gotcha already warns about. Fixed: declare the full
+  `{pt,eta,phi,mass}` set for both `Muon` and `Electron`.
+- **`production/gen_top.py::gen_parton_top`**: `t.hasFlags("isLastCopy")` raised
+  `AttributeError: no field named 'hasFlags'`. Root cause: this producer runs in
+  `cf.ProduceColumns`, reading `GenPart` from `cf.ReduceEvents`'s parquet output, not
+  straight from NanoAOD ROOT -- that round-trip doesn't carry coffea's NanoAOD behavior
+  with it (and `GenPart` isn't in columnar_util's `default_coffea_collections` either,
+  so even a bare `attach_coffea_behavior` call wouldn't have covered it). Fixed without
+  reattaching coffea behavior at all: replicated `hasFlags("isLastCopy")` as a direct
+  bitmask check on the plain `statusFlags` integer column (`(statusFlags & (1 << 13))
+  == (1 << 13)`, bit 13 = `isLastCopy`'s index in coffea's `GenParticle.FLAGS` list).
+  Documented in a comment why `isLastCopy` is the physically correct flag here:
+  generators record a particle as a chain of successive copies through parton showering
+  (same identity, momentum updated after each radiation/recoil step); `isLastCopy` is
+  the final copy right before it decays into different daughter particles -- the
+  momentum `top_pt_weight`'s reweighting recipe is defined against.
+
+Not yet re-run to confirm both fixes together.
+
+---
+
 ## cutflow_features selector + re-enable 0t/1t categories
 
 Ported `mtt/selection/cutflow_features.py`: writes per-step object kinematics/counts
@@ -28,7 +62,14 @@ selectors' object dicts exactly.
   block's own "re-enable once top-tagging exists" comment -- the exact condition it
   named is now satisfied.
 
-Not yet run to confirm.
+Verified with `cf.PlotCutflow --categories incl,1e__0t,1e__1t,1m__0t,1m__1t`, but only
+after force-regenerating `cf.SelectEvents`/`cf.CalibrateEvents` output for `--version test`
+(`--remove-output 2,a,False`): the first attempt showed all four new combined categories
+as completely empty while `incl` was populated -- the pre-existing `--version test`
+`cf.SelectEvents` cache predated this change, so its `category_ids` column simply never
+had `1e__0t`/etc. as options (the same class of staleness `custom_increment_stats`'s
+`CHANGES.md` entry already documents). Once regenerated, all four categories populated
+sensibly.
 
 ---
 

@@ -64,7 +64,7 @@ def weights_init(self: Producer) -> None:
 
     self.uses |= {
         electron_weights, muon_weights, btag_weight_stub, pu_weight, normalization_weights,
-        "Electron.{pt,eta,phi,deltaEtaSC}", "Muon.{pt,eta}",
+        "Electron.{pt,eta,phi,mass,deltaEtaSC}", "Muon.{pt,eta,phi,mass}",
     }
     self.produces |= {
         electron_weights, muon_weights, btag_weight_stub, pu_weight, normalization_weights,

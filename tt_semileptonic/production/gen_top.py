@@ -13,6 +13,14 @@ from columnflow.columnar_util import set_ak_column
 ak = maybe_import("awkward")
 np = maybe_import("numpy")
 
+# bit index of "isLastCopy" in NanoAOD's GenPart.statusFlags bitmask (coffea's
+# GenParticle.FLAGS list, nanoevents/methods/nanoaod.py) -- checked directly on the plain
+# statusFlags column below instead of via coffea's .hasFlags(), since this producer runs in
+# cf.ProduceColumns, reading GenPart from cf.ReduceEvents' parquet output, which doesn't
+# carry coffea's NanoAOD behavior (GenPart isn't in columnar_util's
+# default_coffea_collections either) -- .hasFlags() there raises "no field named 'hasFlags'"
+_GENPART_IS_LAST_COPY_BIT = 13
+
 
 @producer(
     uses={
@@ -28,9 +36,16 @@ def gen_parton_top(self: Producer, events: ak.Array, **kwargs) -> ak.Array:
     """
     Parton-level top quarks (before showering/hadronization), read by ``top_pt_weight``.
     """
+    # generators record a particle as a chain of successive copies through parton showering
+    # (same pdgId, momentum updated after each radiation/recoil step); isLastCopy flags the
+    # final copy right before it decays into different daughter particles (b + W for a top),
+    # which is the momentum top_pt_weight's reweighting recipe is defined against -- not an
+    # earlier, not-yet-fully-showered copy, and not the decay products themselves
+    is_last_copy_mask = 1 << _GENPART_IS_LAST_COPY_BIT
+    is_last_copy = (events.GenPart.statusFlags & is_last_copy_mask) == is_last_copy_mask
+
     abs_id = abs(events.GenPart.pdgId)
-    t = events.GenPart[abs_id == 6]
-    t = t[t.hasFlags("isLastCopy")]
+    t = events.GenPart[(abs_id == 6) & is_last_copy]
     t = t[~ak.is_none(t, axis=1)]
 
     events = set_ak_column(events, "GenPartonTop", t)

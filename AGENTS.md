@@ -122,6 +122,23 @@ custom decorator layer.
   disabled until `selection/cutflow_features.py` started producing
   `cutflow.n_toptag_delta_r_lepton`, which `cat_0t`/`cat_1t` need — now re-enabled in
   `config/categories_helper.py`.
+- **New categories don't retroactively apply to an already-cached `cf.SelectEvents`
+  output for the same `--version`.** `category_ids` runs inside `cf.SelectEvents`; law
+  only reruns a task when its declared parameters change, not when the config's
+  categorizer set changes. Hit this re-testing the `0t`/`1t` re-enable: `cf.PlotCutflow`
+  showed the new combined categories as completely empty (while `incl` was populated)
+  until `cf.SelectEvents`/`cf.CalibrateEvents` were force-regenerated
+  (`--remove-output 2,a,False`) for that version. Same class of staleness as the
+  `custom_increment_stats` note below.
+- **`jet_veto_map`'s eta-clipping warning is expected, and its own log message is
+  misleading.** A handful of very forward jets (`|eta|` just past 5.19, the edge of the
+  correctionlib map's valid domain -- normal at the detector's HF acceptance boundary)
+  get clipped before the veto-map lookup; a couple of these per large sample is routine,
+  not a sign of a JEC/JER/jetId bug. The warning text itself (columnflow's
+  `selection/cms/jets.py`) is buggy though: it logs the same pre-clip value for both
+  "detected" and "set to" (the actual `ak.where(...)` clipping happens on the lines
+  *after* the log call is formatted) — the clipping itself is still applied correctly,
+  only the printed message is wrong. Upstream columnflow code, not ours to fix.
 - A `@selector`/`@producer` declares `uses=` (input columns it will read) and
   `produces=` (columns it creates); columnflow checks these against the array and
   raises if a declared column is missing. Sub-selectors/producers passed in `uses`
