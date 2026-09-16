@@ -7,6 +7,7 @@ Selection involving AK4 jets, ported from mtt/selection/jets.py::jet_selection.
 from columnflow.selection import Selector, selector
 from columnflow.selection import SelectionResult
 from columnflow.columnar_util import sorted_indices_from_mask
+from columnflow.production.cms.jet import jet_id
 
 # maybe import awkward in case this Selector is actually run, this needs to be set as columnflow
 # would else give an error during setup, as these packages are not in the default sandbox
@@ -27,11 +28,17 @@ def jet_selection(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Array,
     selection: the selected lepton's own PF jet is removed via ``selected_lepton_jet_mask``
     (NanoAOD clusters an isolated lepton into a jet, which would otherwise be counted).
 
-    TODO: the tight jet ID is not applied yet -- ``Jet.jetId`` is not stored in 2024
-    NanoAOD v15, it has to be recomputed with ``columnflow.production.cms.jet.jet_id``,
-    which needs the JME jet-id correction file (add when the correction infrastructure
-    is set up).
+    The tight jet ID is recomputed rather than read from NanoAOD: the stored ``Jet.jetId``
+    bitmap has a known JME bug in NanoAOD v12/v13 (and is not trustworthy in 2024 v15
+    either), see ``columnflow.production.cms.jet.jet_id`` for the correctionlib-based
+    recomputation and its cited references.
     """
+    # recompute the jet ID from the JME correctionlib file (cfg.x.jet_id / external "jet_id"
+    # file) instead of trusting the (buggy) stored NanoAOD Jet.jetId bitmap
+    events = self[jet_id](events, **kwargs)
+    # bit 2 = "Tight" working point, see JetIdConfig in cfg.x.jet_id
+    tight_jet_id = (events.Jet.jetId & 2 == 2)
+
     sel_params = self.config_inst.x.jet_selection.ak4
     jet = events[sel_params.column]
 
@@ -47,11 +54,12 @@ def jet_selection(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Array,
     loose_jet_mask = not_lepton & (jet.pt > 0.1)
     loose_jet_indices = sorted_indices_from_mask(loose_jet_mask, jet.pt, ascending=False)
 
-    # baseline jets: pt > 30, |eta| < 2.5
+    # baseline jets: pt > 30, |eta| < 2.5, tight jet ID
     jet_mask = (
         not_lepton &
         (abs(jet.eta) < sel_params.max_abseta) &
-        (jet.pt > sel_params.min_pt.baseline)
+        (jet.pt > sel_params.min_pt.baseline) &
+        tight_jet_id
     )
     jet_indices = sorted_indices_from_mask(jet_mask, jet.pt, ascending=False)
 
@@ -111,3 +119,7 @@ def jet_selection_init(self: Selector) -> None:
         f"{p.column}.{c}" for c in ("pt", "eta", "phi", "mass", p.btagger.column)
     }
     self.uses |= lepton_jet_match_columns
+    # jet_id recomputes Jet.jetId from correctionlib; declare it as both a dependency
+    # (uses) and something this selector's output now provides (produces)
+    self.uses |= {jet_id}
+    self.produces |= {jet_id}

@@ -5,6 +5,113 @@ commit's worth of work.
 
 ---
 
+## Weight-producer chain (pu/muon/electron/normalization/top_pt) + b-tag SF placeholder
+
+Ported the weight side of `mtt/production/weights.py` -- the config already had
+`cfg.x.event_weights` listing `pu_weight` / `muon_weight` / `electron_weight` /
+`normalization_weight`, plus the SF config objects, but nothing actually computed and
+persisted those columns.
+
+- **New `tt_semileptonic/production/weights.py`**: `weights` producer (MC only), calls
+  `electron_weights`, `muon_weights`, `pu_weight`, `normalization_weights` (all stock
+  columnflow, config objects were already ready), plus `gen_parton_top` +
+  `top_pt_weight` for `is_ttbar` datasets. `mc_weight` itself is **not** called here
+  (unlike mttbar) -- it's already computed inside the `default` *selector*
+  (`cf.SelectEvents`), not the producer chain.
+- **New `tt_semileptonic/production/gen_top.py`**: `gen_parton_top` (parton-level top
+  quarks from `GenPart`, needed before showering) + `top_pt_weight` (`sqrt(SF(pt_t) *
+  SF(pt_tbar))`, `SF(pt) = exp(a + b*pt)` from `cfg.x.top_pt_reweighting_params`,
+  Run 2 TWiki TOP-16-008 recipe -- ported from `mtt/production/gen_top.py`, trimmed to
+  just what the weight chain needs (mttbar's `gen_top_decay_products` isn't ported).
+- **New `tt_semileptonic/production/default.py`**: top-level producer `law.cfg`'s
+  `production_modules` already (previously incorrectly) referenced; currently just
+  wraps `weights`.
+- **New `tt_semileptonic/production/btag.py`**: `btag_weight_stub` -- a deliberate
+  placeholder, not a real b-tag SF. Writes a flat `btag_weight = 1` and is **not**
+  added to `cfg.x.event_weights`, so it has zero effect on the combined weight today.
+  Why a stub instead of the real thing: columnflow's stock `btag_weights`
+  (`columnflow/production/cms/btag.py::btag_weights_post_init`) unconditionally
+  overwrites `self.btag_uncs` with a hardcoded Run-2-era systematic-name set (`hf`,
+  `lf`, `hfstats1`, ...), running *after* `.derive()`, so it silently clobbers
+  mttbar's `upart_btag_weights = btag_weights.derive(..., cls_dict={"btag_uncs":
+  ...})` pattern. Confirmed by decompressing the already-fetched
+  `btagging_preliminary.json.gz`: the real 2024 `UParTAK4_kinfit` correction set's
+  systematic categories are `fsrdef`/`hdamp`/`isrdef`/`jer`/`jes`/`mass`/`statistic`/
+  `tune` -- calling `btag_weights` unmodified would raise a correctionlib lookup
+  error on `up_hf`, which doesn't exist in the file. Proper fix needs a producer that
+  fully overrides `.post_init` (not just the class attribute); swapping the stub for
+  it later is a one-line import change in `weights.py`.
+- **`config_helper.py`**: fixed `dataset.has_tag("is_ttbar")` (was checking a tag that
+  was never assigned to any dataset -- see next item -- so `top_pt_weight` was never
+  actually registered in any dataset's `event_weights`, silently).
+- **`datasets_helper.py`**: coalesced the ttbar dataset tags. Was
+  `{"has_top", "has_ttbar", "is_sm_ttbar"}` (mttbar's three-tier scheme, needed there
+  to distinguish SM ttbar from BSM ttbar-resonance samples that also carry
+  `has_ttbar`); since this analysis has no BSM ttbar-resonance datasets, simplified to
+  `{"has_top", "is_ttbar"}`. `has_ttbar` was dead weight anyway -- nothing ever read
+  it.
+- **`defaults_and_groups_helper.py`**: `default_producer` (`None` → `"default"`) and
+  `default_hist_producer` (`"cf_default"` → `"all_weights"`), so `cf.ProduceColumns`
+  and `cf.CreateHistograms` run the new chain without needing explicit
+  `--producers`/`--hist-producer` flags.
+
+Not yet run end-to-end (`cf.ProduceColumns` / `cf.CreateHistograms` haven't been
+exercised at all in this project yet -- `cf.ReduceEvents` is still the next task per
+AGENTS.md).
+
+---
+
+## Tight AK4/AK8 jet ID
+
+`Jet.jetId` / `FatJet.jetId` are absent/unreliable in 2024 nano v15 (known JME bug,
+see the twiki/cms-talk links cited in `columnflow.production.cms.jet`'s docstring:
+recomputation via correctionlib is the recommended fix, not trusting the stored
+NanoAOD bit). The config side (`cfg.x.jet_id` / `cfg.x.fatjet_id`, the `jet_id`
+external file) was already in place, just unused.
+
+- `selection/jets.py::jet_selection`: calls `columnflow.production.cms.jet.jet_id`,
+  ANDs `(Jet.jetId & 2 == 2)` ("Tight" WP) into the baseline `jet_mask`.
+- `selection/fatjets.py::top_tagged_jets`: same with `fatjet_id`, ANDed into
+  `toptag_mask` only (not the baseline `fatjet_mask`) -- mirrors mttbar's split.
+- Both `.init` functions now declare `jet_id`/`fatjet_id` in `uses`/`produces`.
+- `selection/default.py`: `jet_selection` / `top_tagged_jets` added to the top-level
+  `default` selector's `produces` set (not just `uses`) -- they now write real columns
+  (`Jet.jetId` / `FatJet.jetId`) via the nested producers, not just selection steps,
+  so they must be listed there for those columns to be kept.
+
+Not yet re-run to confirm (previously `cf.SelectEvents` ran clean on MC before this
+change).
+
+---
+
+## Selection parameters: DotDict → dataclasses
+
+`cfg.x.lepton_selection` / `jet_selection` / `met_selection` / `lepton_jet_iso` were
+plain `DotDict.wrap({...})` nested dicts -- no schema, silent `AttributeError` on a
+typo, no autocomplete. Confirmed first that `DotDict` isn't required by
+columnflow/order anywhere (`order.mixins.AuxDataMixin`'s `cfg.x` proxy just does
+`get_aux`/`set_aux` by string key on `self._aux`, agnostic to the stored value's
+type), so swapping the value type is purely an analysis-side choice.
+
+- **New `tt_semileptonic/config/selection_params.py`**: frozen dataclasses
+  (`LeptonSelectionConfig`, `JetSelectionConfig`, `METSelectionConfig`,
+  `LeptonJetIsoConfig`, and their nested pieces) mirroring the exact attribute names
+  the selectors already read.
+- `config_helper.py`: the four `DotDict.wrap({...})` blocks now construct
+  `selection_params.LeptonSelectionConfig(...)` etc. (referenced via the
+  `selection_params.` namespace, not bare imports).
+- **No changes needed** in `jets.py` / `met.py` / `lepton_jet_2d.py` / `fatjets.py` /
+  `production/lepton.py` -- all reads were already plain attribute access
+  (`p.column`, `p.min_pt.baseline`, ...), which the dataclasses satisfy identically.
+- Caveat: the dataclasses are frozen, so in-place mutation of e.g.
+  `cfg.x.jet_selection.ak4.min_pt` (not currently done anywhere) would now raise
+  `FrozenInstanceError` instead of silently succeeding.
+
+Verified: `cf.SelectEvents --dataset tt_sl_powheg --version test --calibrators default
+--selector default` still runs clean after this change.
+
+---
+
 ## Split lepton definition into a producer; move lepton_selection to its own file
 
 The lepton logic that used to be inline in `selection/default.py` is now split:

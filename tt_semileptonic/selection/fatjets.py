@@ -8,6 +8,7 @@ Ported from mtt/selection/jets.py::top_tagged_jets.
 from columnflow.selection import Selector, selector
 from columnflow.selection import SelectionResult
 from columnflow.columnar_util import sorted_indices_from_mask
+from columnflow.production.cms.jet import fatjet_id
 
 # maybe import awkward in case this Selector is actually run, this needs to be set as columnflow
 # would else give an error during setup, as these packages are not in the default sandbox
@@ -26,15 +27,21 @@ def top_tagged_jets(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Arra
     """
     AK8 top tagging (GloParT-v3 top-vs-QCD) and the all-hadronic veto: reject events with
     >= 2 top-tagged AK8 jets (``pt > 400``, ``|eta| < 2.5``, softdrop mass in
-    ``[105, 210]``, tagger score above the working point). Reads
+    ``[105, 210]``, tagger score above the working point, tight jet ID). Reads
     ``cfg.x.jet_selection.ak8``. Must run after ``lepton_producer`` (reads ``Lepton``).
 
-    TODO: the tight fat-jet ID is not applied -- ``FatJet.jetId`` is absent from 2024
-    NanoAOD v15 and needs ``columnflow.production.cms.jet.fatjet_id`` + the JME file
-    (deferred with the rest of the corrections infrastructure).
+    The tight fat-jet ID is recomputed rather than read from NanoAOD, for the same reason
+    as the AK4 jet ID in ``selection/jets.py``: see ``columnflow.production.cms.jet.jet_id``
+    (``fatjet_id`` is its ``FatJet``-derived variant).
     """
     p = self.config_inst.x.jet_selection.ak8
     fatjet = events[p.column]
+
+    # recompute the fat-jet ID from the JME correctionlib file (cfg.x.fatjet_id / external
+    # "jet_id" file) instead of trusting the (buggy) stored NanoAOD FatJet.jetId bitmap
+    events = self[fatjet_id](events, **kwargs)
+    # bit 2 = "Tight" working point, see JetIdConfig in cfg.x.fatjet_id
+    tight_fatjet_id = (events.FatJet.jetId & 2 == 2)
 
     # top-vs-QCD score from the three GloParT-v3 categories (guard the 0/0 case)
     tqq, tq, qcd = (fatjet[c] for c in p.toptagger.column)
@@ -46,13 +53,14 @@ def top_tagged_jets(self: Selector, events: ak.Array, **kwargs) -> tuple[ak.Arra
     fatjet_mask = (fatjet.pt > p.min_pt.baseline) & (abs(fatjet.eta) < p.max_abseta)
     fatjet_indices = sorted_indices_from_mask(fatjet_mask, fatjet.pt, ascending=False)
 
-    # top-tagged AK8 jets: harder pt, tagger WP, softdrop mass window
+    # top-tagged AK8 jets: harder pt, tagger WP, softdrop mass window, tight jet ID
     toptag_mask = (
         (fatjet.pt > p.min_pt.toptagged) &
         (abs(fatjet.eta) < p.max_abseta) &
         toptag &
         (fatjet.msoftdrop > p.msoftdrop[0]) &
-        (fatjet.msoftdrop < p.msoftdrop[1])
+        (fatjet.msoftdrop < p.msoftdrop[1]) &
+        tight_fatjet_id
     )
     toptag_indices = sorted_indices_from_mask(toptag_mask, fatjet.pt, ascending=False)
 
@@ -90,3 +98,7 @@ def top_tagged_jets_init(self: Selector) -> None:
     p = self.config_inst.x.jet_selection.ak8
     cols = {"pt", "eta", "phi", "mass", "msoftdrop", *p.toptagger.column}
     self.uses |= {f"{p.column}.{c}" for c in cols}
+    # fatjet_id recomputes FatJet.jetId from correctionlib; declare it as both a dependency
+    # (uses) and something this selector's output now provides (produces)
+    self.uses |= {fatjet_id}
+    self.produces |= {fatjet_id}

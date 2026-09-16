@@ -324,7 +324,7 @@ def add_tt_sl_datasets(
 
     for dataset in dataset_list:
         ds = config.add_dataset(config.campaign.get_dataset(dataset))
-        ds.add_tag({"has_top", "has_ttbar", "is_sm_ttbar"})
+        ds.add_tag({"has_top", "is_ttbar"})
         if ds.name.startswith("tt_sl"):
             ds.add_tag("has_memory_intensive_reco")
 
@@ -367,7 +367,7 @@ def add_tt_dl_datasets(
 
     for dataset in dataset_list:
         ds = config.add_dataset(config.campaign.get_dataset(dataset))
-        ds.add_tag({"has_top", "has_ttbar", "is_sm_ttbar"})
+        ds.add_tag({"has_top", "is_ttbar"})
         if ds.name.startswith("tt_sl"):
             ds.add_tag("has_memory_intensive_reco")
 
@@ -410,7 +410,7 @@ def add_tt_fh_datasets(
 
     for dataset in dataset_list:
         ds = config.add_dataset(config.campaign.get_dataset(dataset))
-        ds.add_tag({"has_top", "has_ttbar", "is_sm_ttbar"})
+        ds.add_tag({"has_top", "is_ttbar"})
         if ds.name.startswith("tt_sl"):
             ds.add_tag("has_memory_intensive_reco")
 

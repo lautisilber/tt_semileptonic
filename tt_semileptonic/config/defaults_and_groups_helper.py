@@ -23,9 +23,11 @@ def set_defaults(
         "calibrator": "skip_jecunc",
         "selector": "default",
         "reducer": "default",
-        "producer": None,
-        "weight_producer": "all_weights",
-        "hist_producer": "cf_default",
+        # tt_semileptonic.production.default now exists (production/{weights,gen_top,btag}.py)
+        # and all_weights has something real to multiply, so make both the actual defaults
+        "producer": "default",
+        "weight_producer": "all_weights",  # unused key in this columnflow version, kept for reference
+        "hist_producer": "all_weights",
         "ml_model": None,
         "inference_model": "an_v12_simplified__m7000_w70",
         # Target configuration (re-enable once top-tagging exists): the 0t/1t

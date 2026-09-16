@@ -115,7 +115,10 @@ def custom_increment_stats(
         lepton_producer
     },
     produces={
-        mc_weight, lepton_selection, process_ids, category_ids, lepton_producer
+        # jet_selection / top_tagged_jets now write real columns (Jet.jetId / FatJet.jetId,
+        # recomputed from correctionlib by the nested jet_id / fatjet_id producers), so they
+        # must be listed here too, not just in `uses`, for those columns to be kept
+        mc_weight, lepton_selection, jet_selection, top_tagged_jets, process_ids, category_ids, lepton_producer
     },
 
     # this is our top level Selector, so we need to make it reachable
