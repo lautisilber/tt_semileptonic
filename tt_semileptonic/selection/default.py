@@ -27,6 +27,7 @@ from tt_semileptonic.selection.leptons import lepton_selection
 from tt_semileptonic.selection.met import met_selection
 from tt_semileptonic.selection.lepton_jet_2d import lepton_jet_2d_selection
 from tt_semileptonic.selection.fatjets import top_tagged_jets
+from tt_semileptonic.selection.qcd_spikes import qcd_spikes
 from tt_semileptonic.production.lepton import lepton_producer
 
 # Order of selection is:
@@ -41,6 +42,7 @@ from tt_semileptonic.production.lepton import lepton_producer
 # - lepton_producer builds the Lepton column
 # - AK8 top tagging / all-hadronic veto -> step "all_had_veto"
 # - jet veto map (data + MC)         -> step "jet_veto_map"
+# - QCD spikes (QCD MC only)         -> step "QCDSpikes"
 # (everything after the lepton selection is channel-dependent, so it runs after it)
 
 
@@ -111,7 +113,7 @@ def custom_increment_stats(
     # e.g., if we want to use some internal Selector, make
     # sure that you have all the relevant information
     uses={
-        met_filters, json_filter, jet_veto_map,
+        met_filters, json_filter, jet_veto_map, qcd_spikes,
         mc_weight, jet_selection, lepton_selection, met_selection, lepton_jet_2d_selection,
         top_tagged_jets, custom_increment_stats,
         process_ids,
@@ -179,6 +181,12 @@ def default(
     # reads Jet.jetId (tightLepVeto bit, Run 3), already recomputed by jet_selection above.
     events, jet_veto_results = self[jet_veto_map](events, **kwargs)
     results += jet_veto_results
+
+    # QCD MC only: reject events where the leading jet's pt implausibly exceeds the
+    # generator-level LHE.HT (see selection/qcd_spikes.py for why this happens)
+    if self.dataset_inst.has_tag("is_qcd"):
+        events, qcd_spikes_results = self[qcd_spikes](events, **kwargs)
+        results += qcd_spikes_results
 
     events = self[category_ids](events, results=results, **kwargs) # needs categories
 

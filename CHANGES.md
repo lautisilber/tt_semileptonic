@@ -5,6 +5,89 @@ commit's worth of work.
 
 ---
 
+## JEC/JER calibration + jet-lepton 4-vector cleaning
+
+`calibration/default.py` previously only ran `mc_weight` + `deterministic_seeds` -- every
+`Jet`/`MET` kinematic used throughout selection so far (including this session's tight
+jetId and `jet_veto_map` work) was running on raw, uncorrected NanoAOD values. Ported from
+`mtt/calibration/jets.py`; `cfg.x.jec`/`cfg.x.jer` (already built by
+`corrections_helper.py::jerc_cfg`) turned out to already be the exact dict shape the stock
+calibrators expect -- no adapter needed, unlike the earlier `btag_uncs` mismatch.
+
+- **New `tt_semileptonic/calibration/jets.py`**:
+  - `jec_ak4_nominal`/`jer_ak4_nominal`: derived from columnflow's stock `jec_ak4`/`jer_ak4`
+    with `met_name="PuppiMET"`, `raw_met_name="RawPuppiMET"` (the stock `jets` wrapper
+    calibrator can't target `PuppiMET`, only plain `MET`/`RawMET`) and
+    `uncertainty_sources`/`jec_uncertainty_sources: []` -- nominal only for now; the already
+    -configured `jec_Total_up/down`/`jer_up/down` shifts stay defined but produce no columns
+    yet, deliberately, to keep the surface small while this is validated.
+  - `jec_ak8_nominal`/`jer_ak8_nominal`: same, with `propagate_met=False` (AK4 already
+    handles MET propagation; AK8 doesn't repeat it).
+  - `jet_energy`: combines them, AK4 fully before AK8 (`jec_ak4 -> jer_ak4 -> jec_ak8 ->
+    jer_ak8`), JER only for MC.
+  - `jet_lepton_cleaner`: for *any* PF lepton clustered into a jet (via
+    `Jet.{muon,electron}Idx1/2` -- not just the one selected signal lepton, unlike
+    `selected_lepton_jet_mask` in `production/lepton.py`, which only drops the selected
+    lepton's own jet outright), subtracts that lepton's 4-vector from the jet's 4-vector,
+    gated by sanity checks (positive mass, small angle change, PF-energy-fraction
+    compatibility). Reverts NanoAOD's own default JEC first (`rawFactor` -> 0) so JEC/JER
+    afterward start from the lepton-subtracted raw jet. Matters most for boosted topologies
+    where a lepton sits near but not on top of a jet axis -- included since this analysis is
+    meant to cover both the resolved and boosted regimes, unlike a resolved-only selection
+    where the index-based veto alone would mostly suffice.
+- **`calibration/default.py`**: now runs `mc_weight -> deterministic_seeds ->
+  jet_lepton_cleaner -> jet_energy` (removed the dead commented-out `skip_jecunc`/
+  `skip_jecunc_wo_cleaner` stubs, since `default` now does exactly what they would have).
+- **Bug fixed in `config_helper.py`**: the `jec_{jec_source}`/`jer` shift aliases pointed at
+  `"MET.pt"` (plain NanoAOD MET) -- but the analysis MET is `PuppiMET`, and the new
+  calibrators write their shifted columns as `PuppiMET.pt_jec_*`/`PuppiMET.pt_jer_*`.
+  Retargeted the aliases to `PuppiMET.pt`. This exact bug exists unfixed in mttbar's own
+  config too (`mtt/config/run3/new_mtt_config.py`), just never surfaced there because their
+  live calibrator only ever runs nominal JEC/JER, so no `jec_*`/`jer_*` shift is ever
+  actually requested against it.
+
+**Bug found on first run**: `cf.CalibrateEvents`'s `check_finite_output` check (`law.cfg`)
+raised on `Jet.eta` for `st_twchannel_tbar_dl_powheg`. Root cause: `jet_lepton_cleaner`'s
+final cleanup used `ak.nan_to_none` (only replaces `NaN`) then `ak.fill_none(..., 0.0)` --
+but a near-total lepton fake can clean a jet down to ~zero momentum, where
+`eta = -ln(tan(theta/2))` diverges to `+-inf` as the jet approaches the beam axis. NanoAOD's
+float32 precision means subtracting two nearly-identical 4-vectors (`jet_lv - jet_lepton_lv`)
+can round the transverse components to *exactly* `0.0` (catastrophic cancellation), making
+`p_z / p_T` a literal division by zero -> signed infinity, not `NaN` -- so `nan_to_none`
+never caught it. This exact bug exists unfixed in mttbar's original code too, invisible only
+because mttbar's `law.cfg` has `check_finite_output: None` (the check is never run there).
+Fixed by switching to `ak.nan_to_num(..., nan=0.0, posinf=0.0, neginf=0.0)`, which handles
+both cases in one pass; mapping to `0.0` is fine physically too, not just numerically -- a
+jet cleaned down to ~zero momentum is already a near-total lepton fake with no real jet left
+to describe, so its eta carries no meaningful information regardless.
+
+Verified: `cf.CalibrateEvents`/`cf.SelectEvents` run clean with the new calibrator chain.
+
+---
+
+## QCD spikes selector (QCD MC only)
+
+Ported `mtt/selection/qcd_spikes.py`: HT-binned QCD MC is prone to a mismeasurement
+pathology where a single jet is reconstructed with more pt than the generator-level
+hard-scatter energy scale (`LHE.HT`) can account for -- rejects events where the leading
+jet's pt exceeds `LHE.HT`.
+
+- **New `tt_semileptonic/selection/qcd_spikes.py`**: dropped the `attach_coffea_behavior`
+  call mttbar's version has -- unneeded here since events already carry NanoAOD vector
+  behavior by default and this selector only reads plain scalar fields (`Jet.pt`, `LHE.HT`),
+  no vector arithmetic. Also dropped `exposed=True` (present in mttbar's version): unlike
+  mttbar, which exposes nearly all of its sub-selectors for standalone CLI debugging, our
+  other sub-selectors (`jet_selection`, `lepton_selection`, `met_selection`,
+  `lepton_jet_2d_selection`, `top_tagged_jets`) are all *not* exposed -- only the top-level
+  `default` selector is. `qcd_spikes` alone only produces one step, not a complete
+  selection, so standalone use isn't meaningful; matching our own convention instead of
+  mttbar's here.
+- **`selection/default.py`**: added to `uses` (no persisted column, so not in `produces`,
+  same as `json_filter`), called right after `jet_veto_map`, gated on
+  `self.dataset_inst.has_tag("is_qcd")` (already set by `datasets_helper.py`).
+
+---
+
 ## Golden JSON filter (data) + jet veto map (data + MC)
 
 Both were config-ready but unwired (external files `lumi.golden` / `jet_veto_map`

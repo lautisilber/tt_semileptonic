@@ -430,7 +430,13 @@ def create_new_config(
                 {
                     "Jet.pt": "Jet.pt_{name}",
                     "Jet.mass": "Jet.mass_{name}",
-                    "MET.pt": "MET.pt_{name}",
+                    # aliasing "MET.pt" (the plain NanoAOD MET, ported as-is from mttbar's
+                    # config, same bug present there) is wrong for us: the analysis MET is
+                    # PuppiMET (cfg.x.met_selection.column), and calibration/jets.py's
+                    # jec_ak4_nominal/jer_ak4_nominal derivatives write their shifted columns
+                    # as PuppiMET.pt_jec_*/PuppiMET.pt_jer_* -- aliasing "MET.pt" would point
+                    # at a column that's never produced, silently leaving PuppiMET unshifted
+                    "PuppiMET.pt": "PuppiMET.pt_{name}",
                 },
             )
 
@@ -443,7 +449,9 @@ def create_new_config(
             {
                 "Jet.pt": "Jet.pt_{name}",
                 "Jet.mass": "Jet.mass_{name}",
-                "MET.pt": "MET.pt_{name}",
+                # see the identical comment on the jec_{jec_source} aliases above: analysis
+                # MET is PuppiMET, and jer_ak4_nominal writes PuppiMET.pt_jer_*, not MET.pt_*
+                "PuppiMET.pt": "PuppiMET.pt_{name}",
             },
         )
 

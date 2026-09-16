@@ -136,11 +136,13 @@ custom decorator layer.
 | Task | State |
 |---|---|
 | `cf.GetDatasetLFNs` | ✅ works |
-| `cf.CalibrateEvents` (`--calibrator default`) | ✅ works |
-| `cf.SelectEvents` (`--selector default`) | ⚠️ jet/fatjet tight ID just added (`columnflow.production.cms.jet.{jet_id,fatjet_id}`, recomputed from the `jet_id` correctionlib file since the stored NanoAOD `jetId` bitmap is unreliable, see JME bug thread linked in `selection/jets.py`/`fatjets.py`), not yet re-run to confirm. Previously ✅ ran on MC with steps: `METFilters`, `lepton` (pt-regime IDs + iso), `dilepton_veto`, `jet` (≥2 AK4, channel-dep. pt, now + tight ID), `bjet` (≥1 UParT-medium), `met` (channel-dep. PuppiMET), `lepton_jet_2d` (high-pt only), `all_had_veto` (<2 GloParT top-tagged AK8, now + tight ID). Sub-selectors in `selection/{leptons,jets,met,lepton_jet_2d,fatjets}.py`; lepton defs + `channel_id`/`pt_regime` + `selected_lepton_jet_mask` from `production/lepton.py`. Jets lepton-cleaned via `Jet.{muon,electron}Idx1/2`. Not yet: triggers. Re-check efficiency after each addition |
-| `cf.SelectEvents` on **data** | ❌ fails (14 `data_*` datasets), not yet diagnosed. Selector applies no golden-JSON / MET-filter cuts on data. `columnflow.production.cms.seeds` "optional route not found" warnings on data are harmless (MC-only seed inputs). |
-| `cf.ReduceEvents` | ⏭️ next |
-| beyond | ⛔ not started |
+| `cf.CalibrateEvents` (`--calibrator default`) | ⚠️ just grew from `mc_weight`+`deterministic_seeds` only to also run `jet_lepton_cleaner` (lepton-4-vector subtraction from contaminated jets, any matched PF lepton via `Jet.{muon,electron}Idx1/2`, not just the selected one) then `jet_energy` (JEC + JER on MC, nominal-only for now -- `uncertainty_sources: []`) via `calibration/jets.py`, ported from `mtt/calibration/jets.py`. AK4 fully before AK8; AK8's own MET propagation disabled (AK4 already handles it). Not yet re-run to confirm |
+| `cf.SelectEvents` (`--selector default`) | ✅ runs on the full `mc` group (29 datasets, all branches). Steps: `METFilters`, `JSON` (golden-JSON, data only), `lepton` (pt-regime IDs + iso), `dilepton_veto`, `jet` (≥2 AK4, channel-dep. pt, tight jetId), `bjet` (≥1 UParT-medium), `met` (channel-dep. PuppiMET), `lepton_jet_2d` (high-pt only), `all_had_veto` (<2 GloParT top-tagged AK8, tight jetId), `jet_veto_map` (data + MC, bad-detector-region veto). Tight `Jet`/`FatJet` jetId via `columnflow.production.cms.jet.{jet_id,fatjet_id}` (stored NanoAOD bit is unreliable, see JME bug thread linked in `selection/jets.py`/`fatjets.py`). Sub-selectors in `selection/{leptons,jets,met,lepton_jet_2d,fatjets}.py`; lepton defs + `channel_id`/`pt_regime` + `selected_lepton_jet_mask` from `production/lepton.py`. Not yet: triggers. Not yet re-run since the `CalibrateEvents` JEC/JER change above (selection logic itself unchanged, but its Jet/MET inputs now come from calibrated events) |
+| `cf.SelectEvents` on **data** | not re-tested since `json_filter` was added (was previously ❌, undiagnosed) |
+| `cf.ReduceEvents` | ✅ works on the full `mc` group with `--reducer cf_default` (`default_reducer` config key points at a nonexistent name, pass explicitly). One dataset (`qcd_ht1000to1200_madgraph`, higher jet multiplicity than `tt_sl_powheg`) hit an OOM (`sandbox exit code -9`) at `--workers 20`; fixed with a smaller, task-specific chunk size (`law.cfg`'s `cf.ReduceEvents__chunked_io_chunk_size: 30000`, see the comment there for why) rather than capping workers globally |
+| `cf.PlotCutflow` | ✅ works on the full `mc` group (`--processes all`, renamed from `default` -- see `config/defaults_and_groups_helper.py::set_process_groups`) |
+| `cf.ProduceColumns` | ⏭️ next -- runs the weight-producer chain (`production/{weights,gen_top,btag,default}.py`: electron/muon SF, pileup, normalization, top-pt for ttbar; b-tag SF is a documented flat-1 placeholder, see `production/btag.py`) |
+| beyond | ⛔ not started (ttbar reconstruction (chi2), triggers, `cutflow_features` for `0t`/`1t` categories, MET-φ correction (blocked on a 2024 JME file not yet published), `electron_scale_smear`/muon calibrators) |
 
 Dataset groups (fixed for the 2024 names): `all` (43), `mc` (29), `bkg` (28),
 `signal` (1 = `tt_sl_powheg`), `data` (14), plus `tt`/`st`/`w`/`dy`/`qcd`/`vv`. Run a
@@ -148,12 +150,11 @@ group with `law run cf.SelectEventsWrapper --datasets <group> --branch 0 …`.
 
 ### Known config inconsistencies (not yet cleaned up)
 
-- `config/defaults_and_groups_helper.py`: `default_calibrator` = `"skip_jecunc"`, but
-  only `default` exists in `calibration/default.py` (`skip_jecunc` is commented out).
-  Scripts pass `--calibrator default` explicitly, so it works.
-- `law.cfg` `production_modules` references `tt_semileptonic.production.default`, which
-  doesn't exist (the file is `production/lepton.py`). Harmless for now; fix when adding
-  a producer.
+- `config/defaults_and_groups_helper.py`: `default_reducer` = `"default"`, but only
+  `cf_default` (from `columnflow.reduction.default`) and `example` are registered in
+  `law.cfg`'s `reduction_modules`. Same class of mismatch as the old `default_calibrator`
+  one (now fixed -- `calibration/default.py`'s `default` is the real, actually-used
+  calibrator). Pass `--reducer cf_default` explicitly.
 
 ### Cutflow / plotting
 
