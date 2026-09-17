@@ -9,10 +9,13 @@ This file is written from the real code. The previous version was auto-generated
 hallucinated large parts of the columnflow API — if something here disagrees with the
 code, trust the code and fix this file.
 
-Companion docs: [SELECTION.md](SELECTION.md) (every selection step in detail + the
-difficulties overcome), [CHANGES.md](CHANGES.md) (running change log), and
+Companion docs: [SELECTION.md](SELECTION.md) (every selection step in detail, through
+`cf.ReduceEvents`), [CHANGES.md](CHANGES.md) (running change log),
 [ISSUES.md](ISSUES.md) (framework bugs we hit and worked around — the XRootD exit hang
-and the `cf.PlotCutflow` regression).
+and the `cf.PlotCutflow` regression), and
+[PRODUCE_COLUMNS_PLAN.md](PRODUCE_COLUMNS_PLAN.md) (resumable plan for porting mttbar's
+chi2 ttbar reconstruction — the next substantial piece of `cf.ProduceColumns`, not yet
+started).
 
 ---
 
@@ -161,7 +164,7 @@ custom decorator layer.
 | `cf.PlotCutflow` | ✅ works on the full `mc` group (`--processes all`, renamed from `default` -- see `config/defaults_and_groups_helper.py::set_process_groups`) |
 | `cf.ProduceColumns` | ✅ works on the full `mc` group (29 datasets) via `cf.ProduceColumnsWrapper --producer default`. Runs the weight-producer chain (`production/{weights,gen_top,btag,default}.py`): electron/muon SF, pileup weight, `normalization_weights` (confirms all 29 MC datasets' `cmsdb` cross sections are populated at 13.6 TeV -- resolves `CORRECTIONS_QUESTIONS.md` #13), top-pt reweighting for ttbar; b-tag SF is a documented flat-1 placeholder, see `production/btag.py`. Two bugs found and fixed on the first run (missing `Muon.{phi,mass}` in `uses`; `GenPart.hasFlags` unavailable post-`ReduceEvents`, see CHANGES.md) |
 | `cf.CreateHistograms` | ⏭️ next -- combines the weight columns above into one per-event weight via `--hist-producer all_weights` (`cfg.x.default_hist_producer`). First test: `law run cf.CreateHistograms --dataset tt_sl_powheg --version test --calibrators default --selector default --reducer cf_default --producers default --hist-producer all_weights --variables electron_pt,muon_pt --branch 0` (note `--producers`, plural, unlike `cf.ProduceColumns`'s singular `--producer` -- `ProducersMixin`/`ProducerClassesMixin` in `columnflow/tasks/framework/mixins.py`). Things to check once it runs: does the histogram exist per category/process (`incl`, `1e`, `1m`, `1e__0t`, ... from the re-enabled categories) and shift (`nominal`); is `normalization_weight` scaling the yield sensibly (order-of-magnitude check against `cfg.x.luminosity` × cross section); does the `btag_weight` stub (flat 1) show up as expected with zero effect. Same worker/OOM caution as `cf.ReduceEvents` applies once scaling to the full `mc` group -- start with low `--workers` and watch memory before a full run |
-| beyond | ⛔ not started (ttbar reconstruction (chi2), triggers, MET-φ correction (blocked on a 2024 JME file not yet published), `electron_scale_smear`/muon calibrators) |
+| beyond | 🚧 ttbar reconstruction (chi2) implemented but **not yet run** -- see PRODUCE_COLUMNS_PLAN.md's "Status" section for what's in place and the highest-risk spot to check first. Still not started: triggers, MET-φ correction (blocked on a 2024 JME file not yet published), `electron_scale_smear`/muon calibrators |
 
 Dataset groups (fixed for the 2024 names): `all` (43), `mc` (29), `bkg` (28),
 `signal` (1 = `tt_sl_powheg`), `data` (14), plus `tt`/`st`/`w`/`dy`/`qcd`/`vv`. Run a
