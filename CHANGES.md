@@ -5,6 +5,110 @@ commit's worth of work.
 
 ---
 
+## Empty `cf.GetDatasetLFNs` result for `w_lnu_4j_madgraph` (dasgoclient hiccup)
+
+Hit a real case where `dasgoclient` returned zero files for `w_lnu_4j_madgraph` during a
+10-worker `cf.SelectEventsWrapper --datasets mc` run -- most likely a transient DAS query
+hiccup from many datasets' `dasgoclient` calls firing concurrently. `cf.GetDatasetLFNs`
+cached the empty list as successful output regardless; the failure only surfaced two tasks
+later as a cryptic `IndexError: list index out of range` in
+`cf.CalibrateEvents::iter_nano_files`, once it tried to index into the (empty) LFN list for
+branch 0. Fixed by force-regenerating just that one dataset in isolation
+(`law run cf.GetDatasetLFNs --dataset w_lnu_4j_madgraph --version v1 --remove-output 0,a,True`),
+away from the other 28 datasets' concurrent `dasgoclient` calls.
+
+Considered, then reverted, turning on `columnflow/tasks/external.py::GetDatasetLFNs`'s
+built-in `validate` check (`cfg.x.validate_dataset_lfns = True`), which would raise
+immediately if `len(lfns) != dataset_info_inst.n_files` instead of silently caching a bad
+result. **Doesn't work in this repo**: `datasets_helper.py`'s `limit_dataset_files` (set to
+`2` for the `_small` config in `analysis_tt_semileptonic.py`) directly mutates
+`DatasetInfo.n_files` at config-build time to cap how many files get *processed* -- the
+exact same attribute the validator compares the *fetched* LFN count against, and the same
+attribute `tasks/framework/base.py`'s branch-map sizing uses. After capping, almost every
+dataset has `n_files == 2` while `dasgoclient` still (correctly) returns its true, uncapped
+count (644 for this dataset, 915 for `w_lnu_3j_madgraph`, ...), so the validator would raise
+a false mismatch for nearly the entire `mc` group the moment `cf.GetDatasetLFNs` is
+regenerated. Not pursued further; if this class of bug recurs, the manual check (compare a
+suspect dataset's cached `lfns_*.json` length against its `cmsdb` `n_files`, see this
+entry's diagnosis) is the fallback until a validator compatible with per-config file capping
+exists.
+
+---
+
+## Chi2 ttbar reconstruction (`production/ttbar_reco.py`) + chi2/cos(theta*) categories
+
+Ported mttbar's combinatorial chi2 ttbar reconstruction (`mtt/production/ttbar_reco.py`'s
+`ttbar` producer) as `ttbar_reco`, wired into `production/default.py` alongside `weights`
+and `features`. Confirmed on `tt_sl_powheg` (`--branch 0`): `cf.ProduceColumns` runs clean
+and `cf.PlotVariables1D --variables chi2,chi2_lt100,top_had_mass,top_lep_mass,cos_theta_star`
+plots the resulting `TTbar.*` columns.
+
+The config side (`cfg.x.chi2_parameters`, `cfg.x.ttbar_reco_settings`, the
+`chi2`/`top_had_*`/`top_lep_*`/`cos_theta_star` variable definitions, and the
+`chi2pass`/`chi2fail`/`acts_*` category *definitions*) had already been ported in an earlier
+session (the untracked `production/neutrino.py` and `production/util.py` were the other
+half); the producer itself was the missing piece.
+
+Two adaptations from mtt's version:
+
+- Reads the `Lepton` column directly instead of recomputing it via mtt's `choose_lepton` --
+  ours is already built by `production/lepton.py::lepton_producer` during `cf.SelectEvents`
+  and kept through `cf.ReduceEvents` (`Lepton.*` in `cfg.x.keep_columns`), matching the
+  pattern `neutrino_candidates` already uses.
+- Dropped mtt's `Profiler`-based runtime/memory instrumentation (`mtt.profiling_tools`,
+  a module we don't have); the combinatorics algorithm itself is unchanged.
+
+Deliberately **not** ported, to keep this step reviewable on its own:
+
+- **Gen-level matching** (mtt's `ttbar_gen` producer + the `if self.dataset_inst.is_mc`
+  block in `ttbar`). `ttbar_gen` reads `GenPart.hasFlags(...)`, which breaks the same way
+  `production/gen_top.py` already found: `GenPart` read back from `cf.ReduceEvents`' parquet
+  output during `cf.ProduceColumns` doesn't carry coffea's NanoAOD behavior (it isn't in
+  `columnar_util`'s `default_coffea_collections`), so `.hasFlags()` raises. Porting
+  `ttbar_gen` needs the same statusFlags-bitmask workaround throughout -- its own task. The
+  `gen_top_had_mass`/`gen_top_lep_mass` variables are already commented out in
+  `config/variables_helper.py` for the same reason.
+
+**Also added, in the same change, but not yet run/confirmed** (unlike the reconstruction
+above): recomputing `category_ids` for the chi2/cos(theta*)-dependent categories, mirroring
+mtt's `add_prod_cats` producer:
+
+- `cfg.x.categorization = {"chi2_max": 30}` added to `config_helper.py` (mtt's value).
+- `categorization/util.py` (new): `make_categorizer_not`/`make_categorizer_range` factories,
+  ported from `mtt/categorization/util.py`.
+- `production/categories.py` (new): `sel_chi2pass`/`sel_chi2fail`/`sel_acts_{0_5,5_7,7_9,9_1}`
+  categorizers, ported from `mtt/production/categories.py`. Registered via `law.cfg`'s
+  `categorization_modules` (mtt does the same -- despite living under `production/`, these
+  are `Categorizer`s, resolved by class name from that module list, not from
+  `production_modules`).
+- `production/default.py::default_pre_init` (a new `@default.pre_init` hook, not a `.init`
+  hook on `ttbar_reco` as first attempted) calls
+  `config/categories_helper.py::add_categories_production` before any of `default`'s
+  dependencies are instantiated -- deliberately not `.init` on `ttbar_reco` itself, since
+  `category_ids` is a *sibling* dependency of `ttbar_reco` in `default`'s `uses` set, and the
+  instantiation order between sibling dependencies in a plain `uses={...}` set (a Python
+  `set`, whose iteration order is not guaranteed) isn't something to rely on for correctness --
+  `category_ids.init()` snapshots `config_inst.get_leaf_categories()` into a fixed categorizer
+  map, so if it happened to run before `ttbar_reco.init()` registered the chi2/cos(theta*)
+  categories, they'd silently never be categorized. `pre_init` runs before
+  `create_dependencies()` creates *any* dependency, so this is deterministic. (mtt's own
+  `default.py` has the same latent ordering risk -- it just relies on `uses={features,
+  category_ids, weights, ttbar}` happening to iterate favorably.)
+- `production/default.py` now re-runs `category_ids` after `ttbar_reco`, so the
+  `category_ids` column `cf.SelectEvents` wrote (channel/top-tag only) gets extended with the
+  chi2/cos(theta*) categories during `cf.ProduceColumns`.
+
+This part has **not** been run yet -- next step is a `cf.ProduceColumns` test on
+`tt_sl_powheg --branch 0` with `--remove-output 0,a,True`, checking that `category_ids`
+comes out with the expected combined categories (e.g. `1e__chi2pass`) and that
+`cf.PlotVariables1D`/cutflow-style category selection on `chi2pass`/`chi2fail` works.
+
+Also fixed a stale doc reference: AGENTS.md pointed to a `PRODUCE_COLUMNS_PLAN.md` as "the
+resumable plan for this exact work", but that file was never actually created. Removed the
+dangling references.
+
+---
+
 ## Real b-tag SF (upart_btag_weights) and a features producer
 
 Replaced the flat-1 `btag_weight_stub` with the real 2024 UParTAK4_kinfit b-tag SF, and

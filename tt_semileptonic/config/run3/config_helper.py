@@ -299,6 +299,11 @@ def create_new_config(
         # "max_chunk_size": 10000,
     })
 
+    # working points for event categorization (config/categories_helper.py::add_categories_production)
+    cfg.x.categorization = DotDict.wrap({
+        "chi2_max": 30,
+    })
+
     #
     # systematic shifts
     #

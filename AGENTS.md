@@ -10,12 +10,9 @@ hallucinated large parts of the columnflow API — if something here disagrees w
 code, trust the code and fix this file.
 
 Companion docs: [SELECTION.md](SELECTION.md) (every selection step in detail, through
-`cf.ReduceEvents`), [CHANGES.md](CHANGES.md) (running change log),
+`cf.ReduceEvents`), [CHANGES.md](CHANGES.md) (running change log), and
 [ISSUES.md](ISSUES.md) (framework bugs we hit and worked around — the XRootD exit hang
-and the `cf.PlotCutflow` regression), and
-[PRODUCE_COLUMNS_PLAN.md](PRODUCE_COLUMNS_PLAN.md) (resumable plan for porting mttbar's
-chi2 ttbar reconstruction — the next substantial piece of `cf.ProduceColumns`, not yet
-started).
+and the `cf.PlotCutflow` regression).
 
 ---
 
@@ -73,6 +70,38 @@ law run cf.SelectEvents --dataset tt_sl_powheg --version test \
 - `--calibrator` (singular) up to `CalibrateEvents`; `--calibrators` (plural) from
   `SelectEvents` on.
 - Task namespace is `cf` (e.g. `cf.SelectEvents`), set in `law.cfg`.
+
+### Forcing a task to regenerate (`--remove-output`)
+
+Law caches by parameter combination (dataset/version/calibrators/selector/.../branch) and
+won't rerun a task whose output already exists, even a stale or broken one. `--remove-output`
+is a `depth,mode,run` CSV triple (see `law/task/base.py`):
+
+1. **depth** -- how far up the requirement chain to also remove: an int (`0` = only this
+   task, not its upstream requirements) or a task-family name where recursion stops (e.g.
+   `cf.CalibrateEvents` removes everything from the target task up through, and including,
+   the first `cf.CalibrateEvents` it finds).
+2. **mode** -- `i` (interactive per-target confirm, default), `a` (remove all, no prompts),
+   or `d` (dry run -- shows what would be removed without deleting).
+3. **run** -- whether to actually run the task after removing (default `False`, i.e. by
+   itself `--remove-output` only deletes and exits; a separate plain `law run` is needed
+   afterward to regenerate).
+
+To force-regenerate just one task's own output in a single command (e.g. after changing a
+producer, not the selection/reduction upstream of it):
+
+```bash
+law run cf.ProduceColumns --dataset tt_sl_powheg --version test \
+    --calibrators default --selector default --reducer cf_default --producer default --branch 0 \
+    --remove-output 0,a,True
+```
+
+`depth=0` keeps `cf.ReduceEvents`/`cf.SelectEvents`/`cf.CalibrateEvents` caches untouched.
+Bump the depth (or name the upstream task family) when the change is further back in the
+graph -- e.g. `--remove-output 2,a,False` was needed for a `cf.SelectEvents`-level config
+change (see the "New categories don't retroactively apply..." gotcha below), which forced
+`cf.CalibrateEvents` to regenerate too but left the actual rerun to a separate follow-up
+`law run` (`run=False`).
 
 ---
 
@@ -162,9 +191,10 @@ custom decorator layer.
 | `cf.SelectEvents` on **data** | not re-tested since `json_filter` was added (was previously ❌, undiagnosed) |
 | `cf.ReduceEvents` | ✅ works on the full `mc` group with `--reducer cf_default` (`default_reducer` config key points at a nonexistent name, pass explicitly). One dataset (`qcd_ht1000to1200_madgraph`, higher jet multiplicity than `tt_sl_powheg`) hit an OOM (`sandbox exit code -9`) at `--workers 20`; fixed with a smaller, task-specific chunk size (`law.cfg`'s `cf.ReduceEvents__chunked_io_chunk_size: 30000`, see the comment there for why) rather than capping workers globally |
 | `cf.PlotCutflow` | ✅ works on the full `mc` group (`--processes all`, renamed from `default` -- see `config/defaults_and_groups_helper.py::set_process_groups`) |
-| `cf.ProduceColumns` | ✅ runs the weight-producer chain (`production/{weights,gen_top,btag,default}.py`): electron/muon SF, pileup weight, the real 2024 UParTAK4_kinfit b-tag SF (`upart_btag_weights`, `production/btag.py` -- not yet in `cfg.x.event_weights`, see CHANGES.md), `normalization_weights` (confirms all 29 MC datasets' `cmsdb` cross sections are populated at 13.6 TeV -- resolves `CORRECTIONS_QUESTIONS.md` #13), top-pt reweighting for ttbar. Also runs `production/features.py`: `ht`/`n_jet`/`n_fatjet`/`n_muon`/`n_electron`/`dijet_mass`/`dijet_delta_r`/`jet_lep_pt_rel`/`jet_lep_delta_r`. Confirmed on `tt_sl_powheg` (single branch) with the current producer chain; not yet re-exercised on the full `mc` group since the b-tag SF / features additions (last full-`mc` confirmation predates them, back when b-tag SF was still a flat-1 placeholder and `features.py` didn't exist). Bugs found and fixed along the way: missing `Muon.{phi,mass}` in `uses`; `GenPart.hasFlags` unavailable post-`ReduceEvents`; `btag_weights_post_init`'s hardcoded Run-2-era `btag_uncs` clobbering a `.derive()` override; `@ArrayFunction.post_init` not returning the wrapped function, silently rebinding the module-level name to `None` -- see CHANGES.md for all four |
+| `cf.ProduceColumns` | ✅ runs the weight-producer chain (`production/{weights,gen_top,btag,default}.py`): electron/muon SF, pileup weight, the real 2024 UParTAK4_kinfit b-tag SF (`upart_btag_weights`, `production/btag.py` -- not yet in `cfg.x.event_weights`, see CHANGES.md), `normalization_weights` (confirms all 29 MC datasets' `cmsdb` cross sections are populated at 13.6 TeV -- resolves `CORRECTIONS_QUESTIONS.md` #13), top-pt reweighting for ttbar. Also runs `production/features.py`: `ht`/`n_jet`/`n_fatjet`/`n_muon`/`n_electron`/`dijet_mass`/`dijet_delta_r`/`jet_lep_pt_rel`/`jet_lep_delta_r`. Also runs `production/ttbar_reco.py::ttbar_reco` (ported from `mtt/production/ttbar_reco.py`): combinatorial chi2 assignment of lepton/neutrino/jets to the leptonic and hadronic top legs (resolved regime) or lepton/neutrino/jets + top-tagged AK8 jet (boosted regime), reusing `production/neutrino.py::neutrino_candidates` and the `Lepton` column built during `cf.SelectEvents`; config side (`cfg.x.chi2_parameters`, `cfg.x.ttbar_reco_settings`, the `chi2`/`top_had_*`/`top_lep_*`/`cos_theta_star` variables) was already in place. Deliberately deferred from `ttbar_reco` to keep that step reviewable: gen-level matching (mtt's `ttbar_gen` producer reads `GenPart.hasFlags(...)`, which breaks the same way `production/gen_top.py` already found -- no coffea NanoAOD behavior on `GenPart` read back from `cf.ReduceEvents`' parquet during `cf.ProduceColumns`). Recomputing `category_ids` for the chi2/cos(theta*)-dependent categories is now wired up too (`cfg.x.categorization.chi2_max`, the `sel_chi2pass`/`sel_chi2fail`/`sel_acts_*` categorizers in `production/categories.py`, registered via `law.cfg`'s `categorization_modules`; `production/default.py` reruns `category_ids` after `ttbar_reco`) but **not yet run/confirmed** -- see CHANGES.md. Confirmed on `tt_sl_powheg` (single branch) with the current producer chain; not yet re-exercised on the full `mc` group since the b-tag SF / features / ttbar_reco additions (last full-`mc` confirmation predates them). Bugs found and fixed along the way: missing `Muon.{phi,mass}` in `uses`; `GenPart.hasFlags` unavailable post-`ReduceEvents`; `btag_weights_post_init`'s hardcoded Run-2-era `btag_uncs` clobbering a `.derive()` override; `@ArrayFunction.post_init` not returning the wrapped function, silently rebinding the module-level name to `None` -- see CHANGES.md for all four |
+| `cf.PlotVariables1D` (chi2 variables) | ✅ `chi2`/`chi2_lt100`/`top_had_mass`/`top_lep_mass`/`cos_theta_star` (`TTbar.*` from `ttbar_reco` above) confirmed plottable on `tt_sl_powheg` (single branch) |
 | `cf.CreateHistograms` | ⏭️ next -- combines the weight columns above into one per-event weight via `--hist-producer all_weights` (`cfg.x.default_hist_producer`). First test: `law run cf.CreateHistograms --dataset tt_sl_powheg --version test --calibrators default --selector default --reducer cf_default --producers default --hist-producer all_weights --variables electron_pt,muon_pt --branch 0` (note `--producers`, plural, unlike `cf.ProduceColumns`'s singular `--producer` -- `ProducersMixin`/`ProducerClassesMixin` in `columnflow/tasks/framework/mixins.py`). Things to check once it runs: does the histogram exist per category/process (`incl`, `1e`, `1m`, `1e__0t`, ... from the re-enabled categories) and shift (`nominal`); is `normalization_weight` scaling the yield sensibly (order-of-magnitude check against `cfg.x.luminosity` × cross section); `btag_weight` is real now but still has zero effect on yields since it's not in `cfg.x.event_weights` (see the `cf.ProduceColumns` row). Same worker/OOM caution as `cf.ReduceEvents` applies once scaling to the full `mc` group -- start with low `--workers` and watch memory before a full run |
-| beyond | 🚧 ttbar reconstruction (chi2) implemented but **not yet run** -- see PRODUCE_COLUMNS_PLAN.md's "Status" section for what's in place and the highest-risk spot to check first. Still not started: triggers, MET-φ correction (blocked on a 2024 JME file not yet published), `electron_scale_smear`/muon calibrators |
+| beyond | 🚧 Still not started: triggers, MET-φ correction (blocked on a 2024 JME file not yet published), `electron_scale_smear`/muon calibrators, gen-level ttbar matching (see the `cf.ProduceColumns` row above). The chi2/cos(theta*) category wiring is in but not yet run/confirmed -- also see that row |
 
 Dataset groups (fixed for the 2024 names): `all` (43), `mc` (29), `bkg` (28),
 `signal` (1 = `tt_sl_powheg`), `data` (14), plus `tt`/`st`/`w`/`dy`/`qcd`/`vv`. Run a
