@@ -5,6 +5,56 @@ commit's worth of work.
 
 ---
 
+## Real b-tag SF (upart_btag_weights) and a features producer
+
+Replaced the flat-1 `btag_weight_stub` with the real 2024 UParTAK4_kinfit b-tag SF, and
+ported mttbar's `features` producer (jet/lepton multiplicities, dijet and jet-lepton
+kinematics). Both wired into `production/default.py`, confirmed running clean via
+`cf.ProduceColumns --producer default` on `tt_sl_powheg`.
+
+- **New `production/btag.py`**: `upart_btag_weights`, derived from columnflow's stock
+  `btag_weights` the same way mttbar's own `upart_btag_weights` is (`.derive(cls_dict=
+  {"btag_uncs": ...})`) -- but that pattern alone doesn't work on our columnflow commit.
+  `btag_weights_post_init` unconditionally overwrites `self.btag_uncs` with a hardcoded
+  Run-2-era name set (`hf`/`lf`/`hfstats1`/`hfstats2`/`lfstats1`/`lfstats2`/`cferr1`/
+  `cferr2`) *after* `.derive()`'s override has already applied, silently clobbering it --
+  on mttbar's older columnflow commit that reassignment is commented out, which is why
+  their identical `.derive()` call works there. Our 2024 `UParTAK4_kinfit` correction set
+  uses a different systematic-name set (`fsrdef`/`hdamp`/`isrdef`/`jer`/`jes`/`mass`/
+  `statistic`/`tune`), so letting the hardcoded names win raises a correctionlib lookup
+  error the moment `up_hf` is requested, which the file doesn't have. Fixed by giving
+  `upart_btag_weights` its own `post_init` that runs the stock one first, then restores
+  the correct `btag_uncs` and fixes up the `produces` entries it wrongly named.
+  - **Bug found on first run**: `TypeError: 'NoneType' object is not callable` calling
+    the stock post_init. Root cause: `ArrayFunction.post_init` (columnflow's decorator
+    registering a producer's post-init hook) "does not return the wrapped function" (its
+    own docstring) -- `@btag_weights.post_init def btag_weights_post_init(...): ...`
+    therefore rebinds the *module-level* name `btag_weights_post_init` to `None`, since
+    `def foo(): ...; foo = decorator(foo)` is what `@decorator` sugar expands to. The
+    working implementation still exists as the class attribute `btag_weights.
+    post_init_func`, set by the decorator as a side effect -- fixed by calling that
+    directly instead of importing the (now-`None`) module-level name.
+  - Like mttbar's own config, `btag_weight` is *not* added to `cfg.x.event_weights` --
+    folding a per-jet shape SF straight into the combined weight changes the total
+    selected yield without a per-jet-multiplicity renormalization step, which neither
+    repo has implemented (mttbar's config only defines the *intended* target column names
+    for that, `normalized_btag_weight`/`normalized_btag_weight_upart`, without ever
+    writing the producer that would populate them). For now the columns exist for
+    inspection/plotting only.
+- **New `production/features.py`**: `ht`, `n_jet`, `n_fatjet`, `n_muon`, `n_electron`,
+  `dijet_mass`, `dijet_delta_r`, `jet_lep_pt_rel`, `jet_lep_delta_r`, ported from
+  `mtt/production/features.py`. Trimmed mttbar's `jet_lepton_features` to read our
+  existing `Lepton` column (`production/lepton.py::lepton_producer`, computed during
+  selection and kept post-`ReduceEvents`) instead of recomputing it via mttbar's
+  `choose_lepton`. Left out mttbar's `jet_energy_shifts` pseudo-producer (registers
+  JEC/JER shift names) -- our JEC/JER calibrators currently only run nominal
+  (`uncertainty_sources: []`, `calibration/jets.py`), so there's nothing yet for it to
+  register.
+- **`production/default.py`**: wired `features` into the default producer chain
+  alongside `weights`.
+
+---
+
 ## First cf.ProduceColumns run: two bugs in the weight-producer chain
 
 First actual run of `cf.ProduceColumns --producer default` (the weight-producer chain
