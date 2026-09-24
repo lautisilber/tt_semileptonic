@@ -19,7 +19,7 @@ from columnflow.production.cms.pileup import pu_weight
 from columnflow.production.normalization import normalization_weights
 from columnflow.util import maybe_import
 
-from tt_semileptonic.production.btag import btag_weight_stub
+from tt_semileptonic.production.btag import upart_btag_weights
 from tt_semileptonic.production.gen_top import gen_parton_top, top_pt_weight
 
 ak = maybe_import("awkward")
@@ -28,8 +28,8 @@ ak = maybe_import("awkward")
 @producer
 def weights(self: Producer, events: ak.Array, **kwargs) -> ak.Array:
     """
-    Computes, for MC only: electron/muon scale factors, pileup weight, the b-tag weight
-    stub (see ``production/btag.py``), the normalization weight, and -- for SM ttbar
+    Computes, for MC only: electron/muon scale factors, pileup weight, the b-tag scale
+    factor (see ``production/btag.py``), the normalization weight, and -- for SM ttbar
     datasets -- the top-pt reweighting.
     """
     if self.dataset_inst.is_mc:
@@ -41,8 +41,9 @@ def weights(self: Producer, events: ak.Array, **kwargs) -> ak.Array:
         muon_mask = (events.Muon.pt >= 30.0) & (abs(events.Muon.eta) < 2.4)
         events = self[muon_weights](events, muon_mask=muon_mask, **kwargs)
 
-        # b-tag SF: placeholder only, see production/btag.py
-        events = self[btag_weight_stub](events, **kwargs)
+        # b-tag SF: jet phase space follows mttbar's 2024 config
+        jet_mask = (events.Jet.pt >= 100.0) & (abs(events.Jet.eta) < 2.5)
+        events = self[upart_btag_weights](events, jet_mask=jet_mask, **kwargs)
 
         events = self[pu_weight](events, **kwargs)
 
@@ -63,11 +64,11 @@ def weights_init(self: Producer) -> None:
         return
 
     self.uses |= {
-        electron_weights, muon_weights, btag_weight_stub, pu_weight, normalization_weights,
+        electron_weights, muon_weights, upart_btag_weights, pu_weight, normalization_weights,
         "Electron.{pt,eta,phi,mass,deltaEtaSC}", "Muon.{pt,eta,phi,mass}",
     }
     self.produces |= {
-        electron_weights, muon_weights, btag_weight_stub, pu_weight, normalization_weights,
+        electron_weights, muon_weights, upart_btag_weights, pu_weight, normalization_weights,
     }
 
     if self.dataset_inst.has_tag("is_ttbar"):
